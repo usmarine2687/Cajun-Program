@@ -2,17 +2,49 @@
 __pycache__/
 *.py[cod]
 
-# Virtual environment
+# C extensions
+*.so
+*.pyd
+*.dll
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
 .venv/
 .env/
+env/
+ENV/
+venv/
+ENV.bak/
+venv.bak/
 
 # SQLite database
 Cajun_Data.db
 *.sqlite3
 
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
 # Logs
 *.log
+
+# VS Code settings
+.vscode/
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# Editor swap/backup files
+*~
+*.swp
+*.swo
+*.bak
+*.tmp
+.idea/
+.spyderproject
+.ropeproject

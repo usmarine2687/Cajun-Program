@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS TicketAssignments (
     ticket_id INTEGER NOT NULL,
     mechanic_id INTEGER NOT NULL,
     hours_worked REAL,
+    work_description TEXT,
     FOREIGN KEY (ticket_id) REFERENCES Tickets(ticket_id),
     FOREIGN KEY (mechanic_id) REFERENCES Mechanics(mechanic_id)
 );

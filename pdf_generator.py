@@ -9,19 +9,37 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 
 
-def generate_ticket_pdf(ticket_details, customer, boat, output_path):
-    """Generate professional invoice PDF for a ticket."""
+def generate_ticket_pdf(ticket_details, customer, boat, output_path, engine=None, company_brand=None, logo_path=None):
+    """Generate professional invoice PDF for a ticket.
+
+    Args:
+        ticket_details: Dict with ticket, parts, labor, totals.
+        customer: Customer dict.
+        boat: Optional boat dict.
+        output_path: Destination PDF file path.
+        engine: Optional engine/new engine dict for additional details.
+        company_brand: Optional dict with keys 'name', 'tagline', 'color_primary', 'color_secondary'.
+        logo_path: Optional path to a logo image to render in header.
+    """
     doc = SimpleDocTemplate(output_path, pagesize=letter)
     story = []
     styles = getSampleStyleSheet()
     
-    # Custom styles
+    brand = company_brand or {
+        'name': 'CAJUN MARINE',
+        'tagline': 'Your Authorized Tohatsu Dealer',
+        'color_primary': '#1a3a52',
+        'color_secondary': '#2d6a9f'
+    }
+    primary = colors.HexColor(brand['color_primary'])
+    secondary = colors.HexColor(brand['color_secondary'])
+
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
         fontSize=24,
-        textColor=colors.HexColor('#1a3a52'),
-        spaceAfter=30,
+        textColor=primary,
+        spaceAfter=20,
         alignment=TA_CENTER
     )
     
@@ -29,14 +47,32 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
         'CustomHeading',
         parent=styles['Heading2'],
         fontSize=14,
-        textColor=colors.HexColor('#2d6a9f'),
-        spaceAfter=12
+        textColor=secondary,
+        spaceAfter=10
+    )
+    small_label = ParagraphStyle(
+        'SmallLabel',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.grey,
+        spaceAfter=4
     )
     
-    # Title
-    story.append(Paragraph("CAJUN MARINE", title_style))
-    story.append(Paragraph(f"Invoice #{ticket_details['ticket_id']}", styles['Heading2']))
-    story.append(Spacer(1, 0.3*inch))
+    if logo_path and os.path.exists(logo_path):
+        from reportlab.platypus import Image
+        try:
+            img = Image(logo_path, width=1.2*inch, height=1.2*inch)
+            header_table = Table([[img, Paragraph(brand['name'], title_style)]], colWidths=[1.4*inch, 5.6*inch])
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]))
+            story.append(header_table)
+        except Exception:
+            story.append(Paragraph(brand['name'], title_style))
+    else:
+        story.append(Paragraph(brand['name'], title_style))
+    story.append(Paragraph(f"Invoice #{ticket_details['ticket_id']}", heading_style))
+    story.append(Spacer(1, 0.15*inch))
     
     # Date and status
     date_created = ticket_details.get('date_created', 'N/A')
@@ -47,15 +83,16 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
         ['Date Created:', date_created, 'Status:', status],
         ['Date Completed:', date_completed, '', '']
     ]
-    info_table = Table(info_data, colWidths=[1.5*inch, 2*inch, 1*inch, 1.5*inch])
+    info_table = Table(info_data, colWidths=[1.4*inch, 2.1*inch, 1*inch, 1.5*inch])
     info_table.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LINEBELOW', (0, -1), (-1, -1), 0.25, colors.lightgrey),
     ]))
     story.append(info_table)
-    story.append(Spacer(1, 0.3*inch))
+    story.append(Spacer(1, 0.2*inch))
     
     # Customer information
     story.append(Paragraph("Customer Information", heading_style))
@@ -73,45 +110,54 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
     story.append(customer_table)
     story.append(Spacer(1, 0.3*inch))
     
-    # Boat information
-    if boat:
-        story.append(Paragraph("Boat Information", heading_style))
-        boat_data = [
-            ['Year:', str(boat.get('year', 'N/A'))],
-            ['Make:', boat.get('make', 'N/A')],
-            ['Model:', boat.get('model', 'N/A')],
-        ]
-        boat_table = Table(boat_data, colWidths=[1.5*inch, 4.5*inch])
-        boat_table.setStyle(TableStyle([
+    if boat or engine:
+        story.append(Paragraph("Equipment Information", heading_style))
+        equip_rows = []
+        if boat:
+            equip_rows.extend([
+                ['Boat Year:', str(boat.get('year', 'N/A'))],
+                ['Boat Make:', boat.get('make', 'N/A')],
+                ['Boat Model:', boat.get('model', 'N/A')],
+            ])
+        if engine:
+            equip_rows.extend([
+                ['Engine HP:', str(engine.get('hp', 'N/A'))],
+                ['Engine Model:', engine.get('model', 'N/A')],
+                ['Engine Serial:', engine.get('serial_number', 'N/A')],
+            ])
+        equip_table = Table(equip_rows, colWidths=[1.5*inch, 4.5*inch])
+        equip_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
-        story.append(boat_table)
-        story.append(Spacer(1, 0.3*inch))
+        story.append(equip_table)
+        story.append(Spacer(1, 0.2*inch))
     
     # Parts
     parts = ticket_details.get('parts', [])
     if parts:
         story.append(Paragraph("Parts", heading_style))
-        parts_data = [['Part Name', 'Qty', 'Unit Price', 'Total']]
+        parts_data = [['Part #', 'Description', 'Qty', 'Unit', 'Total']]
         for part in parts:
             parts_data.append([
+                part.get('part_number') or '',
                 part['part_name'],
                 str(part['quantity']),
                 f"${part['price']:.2f}",
                 f"${part['line_total']:.2f}"
             ])
-        
-        parts_table = Table(parts_data, colWidths=[3*inch, 0.75*inch, 1.25*inch, 1*inch])
+        parts_table = Table(parts_data, colWidths=[1.0*inch, 2.2*inch, 0.6*inch, 1.1*inch, 1.1*inch])
         parts_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d6a9f')),
+            ('BACKGROUND', (0, 0), (-1, 0), secondary),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ('ALIGN', (0, 1), (0, -1), 'LEFT'),
+            ('ALIGN', (1, 1), (1, -1), 'LEFT'),
         ]))
         story.append(parts_table)
         story.append(Spacer(1, 0.2*inch))
@@ -120,24 +166,25 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
     labor = ticket_details.get('labor', [])
     if labor:
         story.append(Paragraph("Labor", heading_style))
-        labor_data = [['Description', 'Hours', 'Rate', 'Total']]
+        labor_data = [['Description', 'Hours', 'Rate', 'Total', 'Mechanic']]
         for l in labor:
             labor_data.append([
                 l['work_description'],
                 str(l['hours_worked']),
                 f"${l['labor_rate']:.2f}",
-                f"${l['labor_total']:.2f}"
+                f"${l['labor_total']:.2f}",
+                l.get('mechanic_name','')
             ])
-        
-        labor_table = Table(labor_data, colWidths=[3*inch, 0.75*inch, 1.25*inch, 1*inch])
+        labor_table = Table(labor_data, colWidths=[2.6*inch, 0.6*inch, 1.0*inch, 1.0*inch, 1.0*inch])
         labor_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d6a9f')),
+            ('BACKGROUND', (0, 0), (-1, 0), secondary),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ('ALIGN', (0, 1), (0, -1), 'LEFT'),
         ]))
         story.append(labor_table)
         story.append(Spacer(1, 0.2*inch))
@@ -148,9 +195,9 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
     total = ticket_details.get('total', 0)
     
     totals_data = [
-        ['Subtotal:', f"${subtotal:.2f}"],
-        ['Tax (9.75%):', f"${tax:.2f}"],
-        ['Total:', f"${total:.2f}"],
+        ['Subtotal', f"${subtotal:.2f}"],
+        ['Tax (9.75%)', f"${tax:.2f}"],
+        ['Total', f"${total:.2f}"],
     ]
     
     # Add deposits/payments if any
@@ -161,16 +208,18 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
         balance = total - total_paid
         totals_data.append(['Balance Due:', f"${balance:.2f}"])
     
-    totals_table = Table(totals_data, colWidths=[4.5*inch, 1.5*inch])
+    totals_table = Table(totals_data, colWidths=[4.2*inch, 1.8*inch])
     totals_table.setStyle(TableStyle([
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -1), (-1, -1), 12),
-        ('LINEABOVE', (0, -1), (-1, -1), 2, colors.black),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('FONTSIZE', (0, -1), (-1, -1), 11),
+        ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.lightgrey),
+        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.black),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
     ]))
     story.append(totals_table)
-    story.append(Spacer(1, 0.3*inch))
+    story.append(Spacer(1, 0.2*inch))
     
     # Payment history
     if deposits:
@@ -182,10 +231,9 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
                 d['payment_method'],
                 f"${d['amount']:.2f}"
             ])
-        
         payment_table = Table(payment_data, colWidths=[2*inch, 2*inch, 2*inch])
         payment_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d6a9f')),
+            ('BACKGROUND', (0, 0), (-1, 0), secondary),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
@@ -194,6 +242,12 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
             ('GRID', (0, 0), (-1, -1), 1, colors.grey),
         ]))
         story.append(payment_table)
+        story.append(Spacer(1, 0.15*inch))
+
+    if ticket_details.get('description'):
+        story.append(Paragraph("Notes", heading_style))
+        story.append(Paragraph(ticket_details['description'], styles['Normal']))
+        story.append(Spacer(1, 0.15*inch))
     
     # Footer
     story.append(Spacer(1, 0.5*inch))
@@ -205,26 +259,33 @@ def generate_ticket_pdf(ticket_details, customer, boat, output_path):
         alignment=TA_CENTER
     )
     story.append(Paragraph("Thank you for your business!", footer_style))
-    story.append(Paragraph("Cajun Marine - Your Tohatsu Dealer", footer_style))
+    story.append(Paragraph(brand['tagline'], footer_style))
     
     # Build PDF
     doc.build(story)
     return output_path
 
 
-def generate_estimate_pdf(estimate_details, customer, output_path):
-    """Generate professional estimate/quote PDF."""
+def generate_estimate_pdf(estimate_details, customer, output_path, company_brand=None, logo_path=None):
+    """Generate professional estimate/quote PDF with improved styling."""
     doc = SimpleDocTemplate(output_path, pagesize=letter)
     story = []
     styles = getSampleStyleSheet()
     
-    # Custom styles
+    brand = company_brand or {
+        'name': 'CAJUN MARINE',
+        'tagline': 'Your Authorized Tohatsu Dealer',
+        'color_primary': '#1a3a52',
+        'color_secondary': '#2d6a9f'
+    }
+    primary = colors.HexColor(brand['color_primary'])
+    secondary = colors.HexColor(brand['color_secondary'])
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
         fontSize=24,
-        textColor=colors.HexColor('#1a3a52'),
-        spaceAfter=30,
+        textColor=primary,
+        spaceAfter=20,
         alignment=TA_CENTER
     )
     
@@ -232,14 +293,26 @@ def generate_estimate_pdf(estimate_details, customer, output_path):
         'CustomHeading',
         parent=styles['Heading2'],
         fontSize=14,
-        textColor=colors.HexColor('#2d6a9f'),
-        spaceAfter=12
+        textColor=secondary,
+        spaceAfter=10
     )
     
     # Title
-    story.append(Paragraph("CAJUN MARINE", title_style))
-    story.append(Paragraph(f"Estimate #{estimate_details['estimate_id']}", styles['Heading2']))
-    story.append(Spacer(1, 0.3*inch))
+    if logo_path and os.path.exists(logo_path):
+        from reportlab.platypus import Image
+        try:
+            img = Image(logo_path, width=1.2*inch, height=1.2*inch)
+            header_table = Table([[img, Paragraph(brand['name'], title_style)]], colWidths=[1.4*inch, 5.6*inch])
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]))
+            story.append(header_table)
+        except Exception:
+            story.append(Paragraph(brand['name'], title_style))
+    else:
+        story.append(Paragraph(brand['name'], title_style))
+    story.append(Paragraph(f"Estimate #{estimate_details['estimate_id']}", heading_style))
+    story.append(Spacer(1, 0.15*inch))
     
     # Date and validity
     estimate_date = estimate_details.get('estimate_date', datetime.now().strftime('%Y-%m-%d'))
@@ -291,15 +364,16 @@ def generate_estimate_pdf(estimate_details, customer, output_path):
                 f"${item['line_total']:.2f}"
             ])
         
-        items_table = Table(items_data, colWidths=[3*inch, 0.75*inch, 1.25*inch, 1*inch])
+        items_table = Table(items_data, colWidths=[2.8*inch, 0.7*inch, 1.2*inch, 1.1*inch])
         items_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d6a9f')),
+            ('BACKGROUND', (0, 0), (-1, 0), secondary),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ('ALIGN', (0, 1), (0, -1), 'LEFT'),
         ]))
         story.append(items_table)
         story.append(Spacer(1, 0.2*inch))
@@ -315,13 +389,15 @@ def generate_estimate_pdf(estimate_details, customer, output_path):
         ['Estimated Total:', f"${total:.2f}"],
     ]
     
-    totals_table = Table(totals_data, colWidths=[4.5*inch, 1.5*inch])
+    totals_table = Table(totals_data, colWidths=[4.2*inch, 1.8*inch])
     totals_table.setStyle(TableStyle([
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -1), (-1, -1), 12),
-        ('LINEABOVE', (0, -1), (-1, -1), 2, colors.black),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('FONTSIZE', (0, -1), (-1, -1), 11),
+        ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.lightgrey),
+        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.black),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
     ]))
     story.append(totals_table)
     story.append(Spacer(1, 0.3*inch))
@@ -353,7 +429,7 @@ def generate_estimate_pdf(estimate_details, customer, output_path):
         alignment=TA_CENTER
     )
     story.append(Paragraph("Thank you for considering Cajun Marine!", footer_style))
-    story.append(Paragraph("Your Authorized Tohatsu Dealer", footer_style))
+    story.append(Paragraph(brand['tagline'], footer_style))
     
     # Build PDF
     doc.build(story)

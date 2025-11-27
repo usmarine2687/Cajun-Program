@@ -2458,7 +2458,13 @@ Notes:
                         'amount': d.get('amount', 0.0)
                     } for d in deposits
                 ]
-                pdf_generator.generate_ticket_pdf(details, customer, boat, filename)
+                engine = None
+                if details.get('engine_id'):
+                    try:
+                        engine = service.get_new_engine(details['engine_id'])
+                    except Exception:
+                        engine = None
+                pdf_generator.generate_ticket_pdf(details, customer, boat, filename, engine=engine)
                 messagebox.showinfo("Success", f"Invoice PDF saved to:\n{filename}")
                 
                 # Ask if they want to open it

@@ -688,7 +688,8 @@ def get_ticket_details(ticket_id: int) -> Optional[Dict]:
     
     # Get parts and enrich with computed fields expected by PDF generator
     cur.execute("""
-        SELECT tp.ticket_part_id, tp.part_id, tp.quantity_used, p.name as part_name, p.price, p.taxable
+        SELECT tp.ticket_part_id, tp.part_id, tp.quantity_used,
+               p.part_number, p.name as part_name, p.price, p.taxable
         FROM TicketParts tp
         JOIN Parts p ON tp.part_id = p.part_id
         WHERE tp.ticket_id = ?
@@ -701,6 +702,7 @@ def get_ticket_details(ticket_id: int) -> Optional[Dict]:
             'ticket_part_id': rp['ticket_part_id'],
             'part_id': rp['part_id'],
             'part_name': rp['part_name'],
+            'part_number': rp.get('part_number'),
             'price': rp['price'],
             'quantity_used': rp['quantity_used'],
             'quantity': rp['quantity_used'],  # alias for PDF code
@@ -736,7 +738,7 @@ def get_ticket_details(ticket_id: int) -> Optional[Dict]:
     return ticket
 
 
-def list_tickets(status: str = None) -> List[Dict]:
+def list_tickets(status: Optional[str] = None) -> List[Dict]:
     """List tickets, optionally filtered by status."""
     conn = _get_connection()
     conn.row_factory = _dict_factory
@@ -769,8 +771,8 @@ def list_tickets(status: str = None) -> List[Dict]:
 # DEPOSIT OPERATIONS
 # ============================================================================
 
-def add_deposit(ticket_id: int, amount: float, payment_method: str = None,
-               notes: str = None) -> int:
+def add_deposit(ticket_id: int, amount: float, payment_method: Optional[str] = None,
+               notes: Optional[str] = None) -> int:
     """Add deposit/payment to ticket. Returns deposit_id."""
     payment_date = datetime.now().strftime('%Y-%m-%d')
     
@@ -781,7 +783,8 @@ def add_deposit(ticket_id: int, amount: float, payment_method: str = None,
         VALUES (?, ?, ?, ?, ?)
     """, (ticket_id, payment_date, amount, payment_method, notes))
     conn.commit()
-    deposit_id = cur.lastrowid
+    last_id = cur.lastrowid if cur.lastrowid is not None else 0
+    deposit_id = int(last_id)
     conn.close()
     return deposit_id
 

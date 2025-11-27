@@ -18,7 +18,7 @@ class TicketForm(tk.Frame):
 		self.load_tickets()
 
 	def create_widgets(self):
-		tk.Label(self, text="Create / Edit Tickets", font=(None, 14, 'bold')).grid(row=0, column=0, columnspan=4, pady=(0,8))
+		tk.Label(self, text="Create / Edit Tickets", font=('Segoe UI', 14, 'bold')).grid(row=0, column=0, columnspan=4, pady=(0,8))
 
 		# --- Filters ---
 		# Row 1: status + customer search
@@ -61,6 +61,10 @@ class TicketForm(tk.Frame):
 		clear_btn = tk.Button(btn_filt_frame, text='Clear filters', command=self.clear_filters, width=12)
 		clear_btn.pack(side='left')
 
+		# Export CSV
+		export_btn = tk.Button(btn_filt_frame, text='Export CSV', command=self.export_tickets_csv, width=12)
+		export_btn.pack(side='left', padx=(6,0))
+
 		# Tickets list
 		self.tree = ttk.Treeview(self, columns=('id','status','customer','boat','opened','closed','description'), show='headings', height=6)
 		self.tree.heading('id', text='ID')
@@ -84,6 +88,7 @@ class TicketForm(tk.Frame):
 		scr.grid(row=5, column=4, sticky='ns')
 
 		self.tree.bind('<<TreeviewSelect>>', self.on_tree_select_ticket)
+		self.tree.bind('<Double-1>', self.on_ticket_double_click)
 
 		# Customer selector
 		lbl = tk.Label(self, text='Customer *')
@@ -129,6 +134,355 @@ class TicketForm(tk.Frame):
 
 		self.message_label = tk.Label(self, text='', fg='red')
 		self.message_label.grid(row=12, column=0, columnspan=3, pady=(6,0))
+
+	def on_ticket_double_click(self, event):
+		"""Open a detailed view for the selected ticket, including customer, boat, engine, work, and parts."""
+		sel = self.tree.selection()
+		if not sel:
+			return
+		vals = self.tree.item(sel[0])['values']
+		if not vals:
+			return
+		ticket_id = vals[0]
+
+		try:
+			conn = sqlite3.connect(self.db_path)
+			cur = conn.cursor()
+			# Summary: ticket + customer + boat + engine
+			cur.execute('''
+				SELECT t.ticket_id, t.status, t.date_opened, t.date_closed, t.description,
+				       c.customer_id, c.name, c.phone, c.email, c.address,
+				       b.boat_id, b.make, b.model,
+				       e.engine_id, e.type, e.make, e.model, e.hp, e.serial_number
+				FROM Tickets t
+				LEFT JOIN Customers c ON t.customer_id=c.customer_id
+				LEFT JOIN Boats b ON t.boat_id=b.boat_id
+				LEFT JOIN Engines e ON b.boat_id=e.boat_id
+				WHERE t.ticket_id = ?
+			''', (ticket_id,))
+			summary = cur.fetchone()
+
+			# Work assignments
+			cur.execute('''
+				SELECT ta.assignment_id, m.name, m.hourly_rate, ta.hours_worked, ta.work_description
+				FROM TicketAssignments ta
+				JOIN Mechanics m ON ta.mechanic_id=m.mechanic_id
+				WHERE ta.ticket_id = ?
+				ORDER BY ta.assignment_id
+			''', (ticket_id,))
+			work_rows = cur.fetchall()
+
+			# Parts applied
+			cur.execute('''
+				SELECT tp.ticket_part_id, p.name AS part_name, tp.quantity_used, p.price AS unit_price
+				FROM TicketParts tp
+				JOIN Parts p ON tp.part_id = p.part_id
+				WHERE tp.ticket_id = ?
+				ORDER BY tp.ticket_part_id
+			''', (ticket_id,))
+			part_rows = cur.fetchall()
+
+			conn.close()
+		except Exception as e:
+			messagebox.showerror('Error', f'Failed to load ticket details: {e}')
+			return
+
+		# Build popup UI
+		popup = tk.Toplevel(self)
+		popup.title(f'Ticket #{ticket_id} — Details')
+		popup.geometry('900x700')
+		popup.resizable(True, True)
+
+		nb = ttk.Notebook(popup)
+		nb.pack(fill='both', expand=True)
+
+		# Summary tab
+		summary_frame = tk.Frame(nb)
+		nb.add(summary_frame, text='Summary')
+		text = tk.Text(summary_frame, wrap='word')
+		text.pack(fill='both', expand=True)
+
+		def _fmt_phone(p):
+			if not p:
+				return ''
+			d = ''.join(ch for ch in str(p) if ch.isdigit())
+			return f'({d[0:3]}){d[3:6]}-{d[6:10]}' if len(d) == 10 else str(p)
+
+		if summary:
+			(tid, status, opened, closed, desc,
+			 cid, cname, cphone, cemail, caddr,
+			 bid, bmake, bmodel,
+			 eid, etype, emake, emodel, ehp, eserial) = summary
+			lines = [
+				f'Ticket #{tid} — {status or ""}',
+				f'Opened: {opened or ""}   Closed: {closed or ""}',
+				'',
+				'Customer:',
+				f'  {cname or ""}',
+				f'  Phone: {_fmt_phone(cphone)}',
+				f'  Email: {cemail or ""}',
+				f'  Address: {caddr or ""}',
+				'',
+				'Boat:',
+				f'  {bmake or ""} {bmodel or ""}',
+				'',
+				'Engine:',
+				f'  Type: {etype or ""}  Make/Model: {emake or ""} {emodel or ""}  HP: {ehp or ""}  Serial: {eserial or ""}',
+				'',
+				'Description:',
+				f'{desc or ""}'
+			]
+			text.insert('1.0', '\n'.join(lines))
+		text.config(state='disabled')
+
+		# Work tab
+		work_frame = tk.Frame(nb)
+		nb.add(work_frame, text='Work')
+		work_tree = ttk.Treeview(work_frame, columns=('assignment','mechanic','rate','hours','cost','desc'), show='headings')
+		work_tree.heading('assignment', text='Assignment ID')
+		work_tree.heading('mechanic', text='Mechanic')
+		work_tree.heading('rate', text='Hourly Rate')
+		work_tree.heading('hours', text='Hours')
+		work_tree.heading('cost', text='Labor Cost')
+		work_tree.heading('desc', text='Work Description')
+		work_tree.column('assignment', width=110, anchor='center')
+		work_tree.column('mechanic', width=160)
+		work_tree.column('rate', width=100, anchor='e')
+		work_tree.column('hours', width=80, anchor='center')
+		work_tree.column('cost', width=110, anchor='e')
+		work_tree.column('desc', width=360)
+		work_tree.pack(fill='both', expand=True)
+		for r in work_rows:
+			aid, mname, rate, hours, wdesc = r
+			cost = (hours or 0) * (rate or 0)
+			work_tree.insert('', 'end', values=(aid, mname, f"${rate:.2f}" if rate is not None else '', hours or 0, f"${cost:.2f}", wdesc or ''))
+
+		# Parts tab
+		parts_frame = tk.Frame(nb)
+		nb.add(parts_frame, text='Parts')
+		parts_tree = ttk.Treeview(parts_frame, columns=('part_id','name','qty','price','ext'), show='headings')
+		parts_tree.heading('part_id', text='Part ID')
+		parts_tree.heading('name', text='Part Name')
+		parts_tree.heading('qty', text='Qty')
+		parts_tree.heading('price', text='Unit Price')
+		parts_tree.heading('ext', text='Ext Price')
+		parts_tree.column('part_id', width=90, anchor='center')
+		parts_tree.column('name', width=240)
+		parts_tree.column('qty', width=60, anchor='center')
+		parts_tree.column('price', width=100, anchor='e')
+		parts_tree.column('ext', width=110, anchor='e')
+		parts_tree.pack(fill='both', expand=True)
+		for r in part_rows:
+			pid, pname, qty, unit = r
+			ext = (qty or 0) * (unit or 0)
+			parts_tree.insert('', 'end', values=(pid, pname or '', qty or 0, f"${unit:.2f}" if unit is not None else '', f"${ext:.2f}"))
+
+		# Action buttons
+		btns = tk.Frame(popup)
+		btns.pack(fill='x', padx=10, pady=10)
+
+		status_btn = tk.Button(btns, text='Change Status', width=14, command=lambda: self._change_ticket_status_dialog(ticket_id))
+		status_btn.pack(side='left', padx=(0,8))
+
+		add_part_btn = tk.Button(btns, text='Add Part', width=12, command=lambda: self._add_ticket_part_dialog(ticket_id))
+		add_part_btn.pack(side='left', padx=(0,8))
+
+		add_labor_btn = tk.Button(btns, text='Add Labor', width=12, command=lambda: self._add_ticket_labor_dialog(ticket_id))
+		add_labor_btn.pack(side='left')
+
+	def _refresh_after_edit(self):
+		"""Refresh tickets list and keep filters intact."""
+		try:
+			self.load_tickets()
+		except Exception:
+			pass
+
+	def _change_ticket_status_dialog(self, ticket_id: int):
+		dlg = tk.Toplevel(self)
+		dlg.title(f'Change Status — Ticket #{ticket_id}')
+		dlg.geometry('320x140')
+		dlg.resizable(False, False)
+		tk.Label(dlg, text='New Status').pack(pady=(12,6))
+		status_combo = ttk.Combobox(dlg, state='readonly', values=['Open','In Progress','Closed'], width=18)
+		status_combo.pack()
+		status_combo.set('Open')
+		def save_status():
+			new_status = status_combo.get()
+			try:
+				conn = sqlite3.connect(self.db_path)
+				cur = conn.cursor()
+				cur.execute('UPDATE Tickets SET status=? WHERE ticket_id=?', (new_status, ticket_id))
+				conn.commit()
+				conn.close()
+				messagebox.showinfo('Updated', f'Ticket #{ticket_id} status set to {new_status}.')
+				dlg.destroy()
+				self._refresh_after_edit()
+			except Exception as e:
+				messagebox.showerror('Error', f'Failed to update status: {e}')
+		btns2 = tk.Frame(dlg)
+		btns2.pack(pady=10)
+		tk.Button(btns2, text='Save', command=save_status, width=10).pack(side='left', padx=6)
+		tk.Button(btns2, text='Cancel', command=dlg.destroy, width=10).pack(side='left')
+
+	def _add_ticket_part_dialog(self, ticket_id: int):
+		dlg = tk.Toplevel(self)
+		dlg.title(f'Add Part — Ticket #{ticket_id}')
+		dlg.geometry('420x220')
+		dlg.resizable(False, False)
+		frm = tk.Frame(dlg)
+		frm.pack(padx=10, pady=10, fill='x')
+		tk.Label(frm, text='Part').grid(row=0, column=0, sticky='e', padx=(0,6))
+		part_combo = ttk.Combobox(frm, state='readonly', width=40)
+		part_combo.grid(row=0, column=1, sticky='w')
+		tk.Label(frm, text='Qty').grid(row=1, column=0, sticky='e', padx=(0,6))
+		qty_entry = tk.Entry(frm, width=10)
+		qty_entry.grid(row=1, column=1, sticky='w')
+		# Load parts list
+		try:
+			conn = sqlite3.connect(self.db_path)
+			cur = conn.cursor()
+			cur.execute('SELECT part_id, name, price FROM Parts ORDER BY name')
+			parts = cur.fetchall()
+			conn.close()
+			part_combo['values'] = [f"{p[0]} - {p[1]} (${p[2]:.2f})" for p in parts]
+			if parts:
+				part_combo.current(0)
+		except Exception:
+			part_combo['values'] = []
+		def save_part():
+			try:
+				val = part_combo.get()
+				if not val:
+					messagebox.showerror('Input', 'Select a part')
+					return
+				pid = int(str(val).split(' - ')[0])
+				qty = int(qty_entry.get())
+				conn = sqlite3.connect(self.db_path)
+				cur = conn.cursor()
+				cur.execute('INSERT INTO TicketParts (ticket_id, part_id, quantity_used) VALUES (?, ?, ?)', (ticket_id, pid, qty))
+				conn.commit()
+				conn.close()
+				messagebox.showinfo('Added', f'Added part x{qty} to Ticket #{ticket_id}')
+				dlg.destroy()
+				self._refresh_after_edit()
+			except Exception as e:
+				messagebox.showerror('Error', f'Failed to add part: {e}')
+		btns2 = tk.Frame(dlg)
+		btns2.pack(pady=10)
+		tk.Button(btns2, text='Save', command=save_part, width=10).pack(side='left', padx=6)
+		tk.Button(btns2, text='Cancel', command=dlg.destroy, width=10).pack(side='left')
+
+	def _add_ticket_labor_dialog(self, ticket_id: int):
+		dlg = tk.Toplevel(self)
+		dlg.title(f'Add Labor — Ticket #{ticket_id}')
+		dlg.geometry('520x300')
+		dlg.resizable(False, False)
+		frm = tk.Frame(dlg)
+		frm.pack(padx=10, pady=10, fill='x')
+		tk.Label(frm, text='Mechanic').grid(row=0, column=0, sticky='e', padx=(0,6))
+		mech_combo = ttk.Combobox(frm, state='readonly', width=40)
+		mech_combo.grid(row=0, column=1, sticky='w')
+		tk.Label(frm, text='Hours').grid(row=1, column=0, sticky='e', padx=(0,6))
+		hours_entry = tk.Entry(frm, width=12)
+		hours_entry.grid(row=1, column=1, sticky='w')
+		tk.Label(frm, text='Work Description').grid(row=2, column=0, sticky='ne', padx=(0,6))
+		work_text = tk.Text(frm, width=40, height=6)
+		work_text.grid(row=2, column=1, sticky='w')
+		# Load mechanics
+		try:
+			conn = sqlite3.connect(self.db_path)
+			cur = conn.cursor()
+			cur.execute('SELECT mechanic_id, name, hourly_rate FROM Mechanics ORDER BY name')
+			mechs = cur.fetchall()
+			conn.close()
+			mech_combo['values'] = [f"{m[0]} - {m[1]} (${m[2]:.2f}/hr)" for m in mechs]
+			if mechs:
+				mech_combo.current(0)
+		except Exception:
+			mech_combo['values'] = []
+		def save_labor():
+			try:
+				val = mech_combo.get()
+				if not val:
+					messagebox.showerror('Input', 'Select a mechanic')
+					return
+				mid = int(str(val).split(' - ')[0])
+				hours = float(hours_entry.get())
+				work = work_text.get('1.0', tk.END).strip() or None
+				conn = sqlite3.connect(self.db_path)
+				cur = conn.cursor()
+				cur.execute('INSERT INTO TicketAssignments (ticket_id, mechanic_id, hours_worked, work_description) VALUES (?, ?, ?, ?)', (ticket_id, mid, hours, work))
+				conn.commit()
+				conn.close()
+				messagebox.showinfo('Added', f'Added labor {hours}h to Ticket #{ticket_id}')
+				dlg.destroy()
+				self._refresh_after_edit()
+			except Exception as e:
+				messagebox.showerror('Error', f'Failed to add labor: {e}')
+		btns2 = tk.Frame(dlg)
+		btns2.pack(pady=10)
+		tk.Button(btns2, text='Save', command=save_labor, width=10).pack(side='left', padx=6)
+		tk.Button(btns2, text='Cancel', command=dlg.destroy, width=10).pack(side='left')
+
+	def export_tickets_csv(self):
+		"""Export current tickets list to CSV at workspace root."""
+		try:
+			conn = sqlite3.connect(self.db_path)
+			cur = conn.cursor()
+			# Build query using same filters as apply_filters()
+			query = '''SELECT t.ticket_id, t.status, c.name as customer, 
+						COALESCE(b.make,'') || ' ' || COALESCE(b.model,'') as boat,
+						t.date_opened, t.date_closed, t.description
+					FROM Tickets t
+					LEFT JOIN Customers c ON t.customer_id=c.customer_id
+					LEFT JOIN Boats b ON t.boat_id=b.boat_id'''
+			params = []
+			where = []
+			status = self.status_filter.get()
+			if status and status != 'All':
+				where.append('t.status = ?')
+				params.append(status)
+			cust_txt = self.customer_filter_entry.get().strip() if hasattr(self, 'customer_filter_entry') else ''
+			if cust_txt:
+				where.append('c.name LIKE ?')
+				params.append(f'%{cust_txt}%')
+			boat_txt = self.boat_filter_entry.get().strip() if hasattr(self, 'boat_filter_entry') else ''
+			if boat_txt:
+				where.append("(b.make || ' ' || b.model) LIKE ?")
+				params.append(f'%{boat_txt}%')
+			opened_from = self.opened_from_entry.get().strip() if hasattr(self, 'opened_from_entry') else ''
+			if opened_from:
+				where.append('t.date_opened >= ?')
+				params.append(opened_from)
+			opened_to = self.opened_to_entry.get().strip() if hasattr(self, 'opened_to_entry') else ''
+			if opened_to:
+				where.append('t.date_opened <= ?')
+				params.append(opened_to)
+			closed_from = self.closed_from_entry.get().strip() if hasattr(self, 'closed_from_entry') else ''
+			if closed_from:
+				where.append('t.date_closed >= ?')
+				params.append(closed_from)
+			closed_to = self.closed_to_entry.get().strip() if hasattr(self, 'closed_to_entry') else ''
+			if closed_to:
+				where.append('t.date_closed <= ?')
+				params.append(closed_to)
+			if where:
+				query += ' WHERE ' + ' AND '.join(where)
+			query += ' ORDER BY t.ticket_id'
+			cur.execute(query, params)
+			rows = cur.fetchall()
+			conn.close()
+			# Write CSV
+			import csv, os
+			out_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'tickets_export.csv')
+			with open(out_path, 'w', newline='', encoding='utf-8') as f:
+				w = csv.writer(f)
+				w.writerow(['ID','Status','Customer','Boat','Opened','Closed','Description'])
+				for r in rows:
+					w.writerow(r)
+			messagebox.showinfo('Exported', f'Tickets exported to {out_path}')
+		except Exception as e:
+			messagebox.showerror('Export error', f'Failed to export tickets: {e}')
 
 	def load_customers(self):
 		try:

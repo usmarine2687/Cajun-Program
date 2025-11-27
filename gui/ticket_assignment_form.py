@@ -18,7 +18,7 @@ class TicketAssignmentForm(tk.Frame):
 		self.load_assignments()
 
 	def create_widgets(self):
-		tk.Label(self, text="Ticket Assignments — Assign Mechanics & Track Hours", font=(None, 14, 'bold')).grid(row=0, column=0, columnspan=4, pady=(0, 8))
+		tk.Label(self, text="Ticket Assignments — Assign Mechanics & Track Hours", font=('Segoe UI', 14, 'bold')).grid(row=0, column=0, columnspan=4, pady=(0, 8))
 
 		# Layout weights so inputs stay visible and table expands
 		for c in range(0, 4):
@@ -46,7 +46,7 @@ class TicketAssignmentForm(tk.Frame):
 
 		# Calculated labor cost (read-only display)
 		tk.Label(self, text="Labor Cost").grid(row=5, column=0, sticky='e', padx=(0,6))
-		self.cost_label = tk.Label(self, text="$0.00", font=(None, 10, 'bold'), fg='green')
+		self.cost_label = tk.Label(self, text="$0.00", font=('Segoe UI', 10, 'bold'), fg='green')
 		self.cost_label.grid(row=5, column=1, sticky='w')
 
 		# Calculate button
@@ -81,7 +81,7 @@ class TicketAssignmentForm(tk.Frame):
 		filter_frame = tk.Frame(self)
 		filter_frame.grid(row=9, column=0, columnspan=4, pady=(8,4), sticky='w')
 		
-		tk.Label(filter_frame, text="Filter by Ticket:", font=(None, 9, 'bold')).pack(side='left', padx=(0,6))
+		tk.Label(filter_frame, text="Filter by Ticket:", font=('Segoe UI', 9, 'bold')).pack(side='left', padx=(0,6))
 		self.filter_ticket_combo = ttk.Combobox(filter_frame, state='readonly', width=50)
 		self.filter_ticket_combo.pack(side='left', padx=(0,6))
 		
@@ -90,6 +90,10 @@ class TicketAssignmentForm(tk.Frame):
 		
 		clear_filter_btn = tk.Button(filter_frame, text="Clear", command=self.clear_filter, width=8)
 		clear_filter_btn.pack(side='left')
+
+		# Export CSV
+		export_btn = tk.Button(filter_frame, text="Export CSV", command=self.export_assignments_csv, width=10)
+		export_btn.pack(side='left', padx=(6,0))
 
 		# Assignments list (below inputs)
 		self.tree = ttk.Treeview(self, columns=('id', 'ticket', 'mechanic', 'hours', 'labor_cost', 'work'), show='headings', height=8)
@@ -394,12 +398,12 @@ class TicketAssignmentForm(tk.Frame):
 		try:
 			# Try numeric sort for id, hours, labor_cost
 			if col in ('id', 'hours'):
-				items.sort(key=lambda t: float(t[0]) if t[0] else 0, reverse=reverse)
+				items.sort(key=lambda t: float(str(t[0])) if str(t[0]) else 0, reverse=reverse)
 			elif col == 'labor_cost':
 				# Strip $ and convert to float
-				items.sort(key=lambda t: float(t[0].replace('$','').replace(',','')) if t[0] and t[0] != '$0.00' else 0, reverse=reverse)
+				items.sort(key=lambda t: float(str(t[0]).replace('$','').replace(',','')) if str(t[0]) and str(t[0]) != '$0.00' else 0, reverse=reverse)
 			else:
-				items.sort(reverse=reverse)
+				items.sort(key=lambda t: str(t[0]), reverse=reverse)
 		except Exception:
 			items.sort(reverse=reverse)
 
@@ -459,3 +463,48 @@ class TicketAssignmentForm(tk.Frame):
 		"""Clear ticket filter and show all assignments."""
 		self.filter_ticket_combo.set('All')
 		self.load_assignments()
+
+	def export_assignments_csv(self):
+		"""Export current assignments (respecting ticket filter) to CSV at workspace root."""
+		try:
+			import csv, os
+			conn = sqlite3.connect(self.db_path)
+			cur = conn.cursor()
+			query = '''SELECT ta.assignment_id,
+						 t.ticket_id,
+						 t.status,
+						 c.name as customer,
+						 COALESCE(b.make,'') || ' ' || COALESCE(b.model,'') as boat,
+						 m.name as mechanic,
+						 m.hourly_rate,
+						 ta.hours_worked,
+						 ta.work_description
+					FROM TicketAssignments ta
+					JOIN Tickets t ON ta.ticket_id=t.ticket_id
+					JOIN Mechanics m ON ta.mechanic_id=m.mechanic_id
+					LEFT JOIN Customers c ON t.customer_id=c.customer_id
+					LEFT JOIN Boats b ON t.boat_id=b.boat_id'''
+			params = []
+			filter_val = self.filter_ticket_combo.get() if hasattr(self, 'filter_ticket_combo') else 'All'
+			if filter_val and filter_val != 'All':
+				try:
+					tid = int(str(filter_val).split(' - ')[0])
+					query += ' WHERE t.ticket_id = ?'
+					params.append(tid)
+				except Exception:
+					pass
+			query += ' ORDER BY ta.assignment_id DESC'
+			cur.execute(query, params)
+			rows = cur.fetchall()
+			conn.close()
+			out_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'assignments_export.csv')
+			with open(out_path, 'w', newline='', encoding='utf-8') as f:
+				w = csv.writer(f)
+				w.writerow(['AssignmentID','TicketID','Status','Customer','Boat','Mechanic','HourlyRate','HoursWorked','LaborCost','WorkDescription'])
+				for r in rows:
+					assignment_id, ticket_id, status, customer, boat, mechanic, rate, hours, work = r
+					labor_cost = (hours or 0) * (rate or 0)
+					w.writerow([assignment_id, ticket_id, status, customer or '', boat or '', mechanic or '', f"{rate:.2f}" if rate is not None else '', hours or 0, f"{labor_cost:.2f}", work or ''])
+			messagebox.showinfo('Exported', f'Assignments exported to {out_path}')
+		except Exception as e:
+			messagebox.showerror('Export error', f'Failed to export assignments: {e}')

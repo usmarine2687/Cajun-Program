@@ -14,7 +14,7 @@ class MechanicForm(tk.Frame):
 		self.load_mechanics()
 
 	def create_widgets(self):
-		tk.Label(self, text="Mechanics — Create / Edit", font=(None, 14, 'bold')).grid(row=0, column=0, columnspan=3, pady=(0, 8))
+		tk.Label(self, text="Mechanics — Create / Edit", font=('Segoe UI', 14, 'bold')).grid(row=0, column=0, columnspan=3, pady=(0, 8))
 
 		# Mechanics list (table)
 		self.tree = ttk.Treeview(self, columns=('id', 'name', 'hourly_rate'), show='headings', height=6)

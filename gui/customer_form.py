@@ -12,7 +12,7 @@ class CustomerForm(tk.Frame):
         self.load_customers()
 
     def create_widgets(self):
-        tk.Label(self, text="Customers — Create / Edit", font=(None, 14, 'bold')).grid(row=0, column=0, columnspan=3, pady=(0, 8))
+        tk.Label(self, text="Customers — Create / Edit", font=('Segoe UI', 14, 'bold')).grid(row=0, column=0, columnspan=3, pady=(0, 8))
         self.tree = ttk.Treeview(self, columns=('id', 'name', 'phone', 'email', 'address'), show='headings', height=6)
         self._column_labels = {'id': 'ID', 'name': 'Name', 'phone': 'Phone', 'email': 'Email', 'address': 'Address'}
         self.tree.heading('id', text=self._column_labels['id'], command=lambda c='id': self.sort_tree(c, reverse=None))
@@ -53,6 +53,16 @@ class CustomerForm(tk.Frame):
         self.delete_btn = tk.Button(btn_frame, text='Delete', command=self.on_delete, width=12)
         self.delete_btn.pack(side='left', padx=(6,0))
 
+    @staticmethod
+    def _format_phone(raw_phone: str) -> str:
+        """Format phone as (###)###-#### if it has 10 digits; otherwise return original."""
+        if not raw_phone:
+            return ''
+        digits = ''.join(ch for ch in str(raw_phone) if ch.isdigit())
+        if len(digits) == 10:
+            return f"({digits[0:3]}){digits[3:6]}-{digits[6:10]}"
+        return str(raw_phone).strip()
+
     def clear_form(self):
         self.name_entry.delete(0, tk.END)
         self.phone_entry.delete(0, tk.END)
@@ -73,7 +83,7 @@ class CustomerForm(tk.Frame):
 
     def on_create(self):
         name = self.name_entry.get()
-        phone = self.phone_entry.get()
+        phone = self._format_phone(self.phone_entry.get())
         email = self.email_entry.get()
         address = self.address_text.get('1.0', tk.END).strip()
         valid, msg = self.validate_inputs(name, phone, email)
@@ -114,7 +124,8 @@ class CustomerForm(tk.Frame):
             for r in self.tree.get_children():
                 self.tree.delete(r)
             for r in rows:
-                self.tree.insert('', 'end', values=(r[0], r[1], r[2] or '', r[3] or '', r[4] or ''))
+                formatted_phone = self._format_phone(r[2]) if r[2] else ''
+                self.tree.insert('', 'end', values=(r[0], r[1], formatted_phone, r[3] or '', r[4] or ''))
         except Exception as e:
             pass
 
@@ -129,7 +140,7 @@ class CustomerForm(tk.Frame):
         self.name_entry.delete(0, tk.END)
         self.name_entry.insert(0, name)
         self.phone_entry.delete(0, tk.END)
-        self.phone_entry.insert(0, phone)
+        self.phone_entry.insert(0, self._format_phone(phone))
         self.email_entry.delete(0, tk.END)
         self.email_entry.insert(0, email)
         self.address_text.delete('1.0', tk.END)
@@ -145,7 +156,7 @@ class CustomerForm(tk.Frame):
             messagebox.showwarning('No selection', 'Select a customer from the list to update.')
             return
         name = self.name_entry.get()
-        phone = self.phone_entry.get()
+        phone = self._format_phone(self.phone_entry.get())
         email = self.email_entry.get()
         address = self.address_text.get('1.0', tk.END).strip()
         valid, msg = self.validate_inputs(name, phone, email)
@@ -196,9 +207,13 @@ class CustomerForm(tk.Frame):
     def sort_tree(self, col, reverse=None):
         l = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
         try:
-            l.sort(key=lambda t: float(t[0]) if t[0] else 0, reverse=reverse if reverse is not None else False)
+            # Numeric sort for ID column, text sort otherwise
+            if col == 'id':
+                l.sort(key=lambda t: float(str(t[0])) if str(t[0]) else 0, reverse=bool(reverse))
+            else:
+                l.sort(key=lambda t: str(t[0]).lower(), reverse=bool(reverse))
         except Exception:
-            l.sort(key=lambda t: t[0], reverse=reverse if reverse is not None else False)
+            l.sort(key=lambda t: str(t[0]).lower(), reverse=bool(reverse))
         for index, (val, k) in enumerate(l):
             self.tree.move(k, '', index)
         if reverse is None:

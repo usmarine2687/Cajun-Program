@@ -14,7 +14,7 @@ class BoatForm(tk.Frame):
 		self.load_customers()
 
 	def create_widgets(self):
-		tk.Label(self, text="Create new boat", font=(None, 14, 'bold')).grid(row=0, column=0, columnspan=2, pady=(0, 8))
+		tk.Label(self, text="Create new boat", font=('Segoe UI', 14, 'bold')).grid(row=0, column=0, columnspan=2, pady=(0, 8))
 
 		# Customer selector
 		tk.Label(self, text="Customer *").grid(row=1, column=0, sticky='e', padx=(0,6))

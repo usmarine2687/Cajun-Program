@@ -1,77 +1,41 @@
-# Cajun Program — Customer GUI
+# Cajun Marine Management System
 
-This workspace provides a small Tkinter GUI to create and manage Customers, Boats and Engines in an SQLite database.
+Unified application for managing customers, boats, engines, parts, tickets, estimates, PDFs, and backups.
 
-Files of interest:
+## Core Files
+- `app.py` — Main Tkinter application (navigation, tickets, parts, labor, estimates, backups, PDF export).
+- `db/service.py` — Service layer with all CRUD and business logic (tax calculation, totals, deposits).
+- `db/db_utils.py` / `init_db.py` — Database initialization and path helpers.
+- `schema.sql` — Full database schema (customers, boats, engines, parts, tickets, estimates, mechanics, deposits).
+- `pdf_generator.py` — Invoice and estimate PDF generation.
+- `backup_utils.py` — Automated and manual backup management.
+- `validation.py` — Field validation utilities.
 
-- `init.py` — Initializes the SQLite database using `schema.sql` (creates `Cajun_Data.db`).
-- `schema.sql` — DB schema including `Customers` table and related tables.
-- `Shop.py` — GUI application. Open this to create and manage Customers, Boats and Engines.
-- `verify_db_insert.py` — CLI script that inserts a test customer and prints the inserted row (non-GUI verification).
-- `verify_boat_insert.py` — CLI script that inserts a test boat attached to the first available customer and prints the inserted row.
-- `verify_engine_insert.py` — CLI script that inserts a test engine attached to the first available boat and prints the inserted row.
- - `verify_ticket_insert.py` — CLI script that inserts a test ticket attached to the first available customer and boat, and prints the inserted row.
+Legacy helper scripts and earlier multi-form GUI modules have been removed to reduce clutter. The single entry point is now `app.py`.
 
-Note: Engines now store these fields: `type`, `make`, `model`, `hp`, `serial_number`.
+## Setup
+```powershell
+python init.py   # Ensure schema applied
+python app.py    # Launch application
+```
 
-Auto-refresh — creating/updating/deleting customers or boats in one tab automatically refreshes related controls in other tabs (Boats, Engines and Tickets selectors/lists).
+## Key Features
+- Ticket workflow: parts & labor assignment, automatic tax & totals, deposits, PDFs.
+- Inventory: parts with supplier, cost, retail, taxable flag, part numbers; new engines tracking.
+- Boat & engine management with extended schema (colors, engine types, outdrive, year).
+- Mechanics management (password-protected Settings page).
+- Automated backup and restore.
 
-How to use
-----------
+## Next Planned Improvement
+Revamp PDF design (see TODO) for branding, clearer totals, inclusion of engine and part number details.
 
-1. Initialize the database (if you haven't already):
+## Notes
+- Data stored in `Cajun_Data.db` beside the codebase.
+- All SQLite connections use a timeout to mitigate lock errors.
+- Louisiana tax rate (9.75%) with exemption rules implemented in service layer.
 
-   ```powershell
-   python init.py
-   ```
+## Backups
+Backups are placed under the `backups/` directory. Use the Backup menu in the GUI to create or restore.
 
-2. Run the GUI form to create new customers:
-
-   ```powershell
-   python Shop.py
-   ```
-
-3. For a quick CLI test insertion (non-GUI), run:
-
-   ```powershell
-   python verify_db_insert.py
-   ```
-
-4. To test boat insertion from CLI (ensure you have at least one customer):
-
-   ```powershell
-   python verify_boat_insert.py
-   ```
-
-5. To test engine insertion from CLI (ensure you have at least one boat):
-
-   ```powershell
-   python verify_engine_insert.py
-   ```
-
-   6. To test ticket insertion from CLI (ensure you have at least one customer and one boat):
-
-      ```powershell
-      python verify_ticket_insert.py
-      ```
-
-Migration note
---------------
-
-If you have an older `Cajun_Data.db` created before the Engine schema was expanded, the GUI will attempt to add missing engine columns at startup using `ALTER TABLE ADD COLUMN`. This is a best-effort migration helper — back up your DB first if you need to preserve data.
-
-6. Customers list view (GUI)
-
-   - Open `Shop.py` and switch to the "Customers" tab.
-   - The top of the tab shows a table of existing customers.
-   - Select a customer to populate the form below for editing.
-   - Use Update to save changes or Delete to remove a selected customer (note: deleting customers may fail if dependent boats/engines exist).
-   - Use Refresh (on Boats/Engines tabs) if you made changes elsewhere.
-   ```
-   ```
-
-Notes
------
-
-- The GUI stores data into `Cajun_Data.db` next to the code.
-- Basic validation is performed on fields (e.g. `Name` required; numeric checks for Year and HP).
+## License
+Internal project for Cajun Marine operations.

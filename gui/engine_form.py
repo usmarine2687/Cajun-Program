@@ -16,7 +16,7 @@ class EngineForm(tk.Frame):
 		self.load_engines()
 
 	def create_widgets(self):
-		tk.Label(self, text="Create / Edit engines", font=(None, 14, 'bold')).grid(row=0, column=0, columnspan=4, pady=(0, 8))
+		tk.Label(self, text="Create / Edit engines", font=('Segoe UI', 14, 'bold')).grid(row=0, column=0, columnspan=4, pady=(0, 8))
 
 		# Engines list (table) — pick an engine to edit
 		self.engine_tree = ttk.Treeview(self, columns=('id', 'boat', 'type', 'make', 'model', 'hp', 'serial'), show='headings', height=6)

@@ -26,6 +26,12 @@ venv.bak/
 Cajun_Data.db
 *.sqlite3
 
+# Backups and generated artifacts
+backups/*.db
+*.pdf
+customer_import_template.xlsx
+EXCEL_IMPORT_INSTRUCTIONS.md
+
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 

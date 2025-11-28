@@ -825,8 +825,19 @@ class CajunMarineApp:
         customers = service.list_customers()
         customer_choices = [f"{c['customer_id']} - {c['name']}" for c in customers]
         customer_var = tk.StringVar()
-        customer_combo = ttk.Combobox(dialog, textvariable=customer_var, values=customer_choices, width=40)
-        customer_combo.grid(row=0, column=1, padx=5, pady=5)
+        # Frame to hold customer combobox and quick-add button
+        customer_frame = tk.Frame(dialog)
+        customer_frame.grid(row=0, column=1, sticky='w', padx=5, pady=5)
+        customer_combo = ttk.Combobox(customer_frame, textvariable=customer_var, values=customer_choices, width=32)
+        customer_combo.pack(side='left')
+        tk.Button(
+            customer_frame,
+            text="+ Add Customer",
+            font=('Segoe UI', 8),
+            bg='#5cb85c',
+            fg='white',
+            command=lambda: self.quick_add_customer_dialog(customer_combo, customer_var)
+        ).pack(side='left', padx=5)
         
         # Boat selection with quick-add
         tk.Label(dialog, text="Boat:*").grid(row=1, column=0, sticky='e', padx=5, pady=5)
@@ -951,66 +962,98 @@ class CajunMarineApp:
         tk.Label(header, text=f"Ticket #{ticket_id}", font=('Segoe UI', 16, 'bold'), 
                 fg='white', bg='#2d6a9f').pack(pady=10)
         
-        # Tabs
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Summary tab
-        summary_frame = tk.Frame(notebook)
-        notebook.add(summary_frame, text='Summary')
-        
-        info_text = tk.Text(summary_frame, wrap='word', height=20)
-        info_text.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        summary = f"""Customer: {ticket.get('customer_name')} ({ticket.get('customer_phone', 'N/A')})
-Boat: {ticket.get('boat_make', 'N/A')} {ticket.get('boat_model', 'N/A')}
-Status: {ticket['status']}
-Opened: {ticket['date_opened']}
-Closed: {ticket.get('date_closed', 'N/A')}
+        # Main container (single page) with overall scrolling
+        outer = tk.Frame(dialog, bg='white')
+        outer.pack(fill='both', expand=True)
+        canvas = tk.Canvas(outer, bg='white', highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        container = tk.Frame(canvas, bg='white')
+        container_id = canvas.create_window((0, 0), window=container, anchor='nw')
 
-Description:
-{ticket.get('description', 'No description')}
+        def _on_container_configure(event):
+            # Ensure scrollregion updates as children change
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        container.bind('<Configure>', _on_container_configure)
 
-    Customer Notes:
-    {ticket.get('customer_notes', 'No customer notes')}
+        def _on_canvas_configure(event):
+            # Keep inner frame width matched to canvas width
+            canvas.itemconfigure(container_id, width=event.width)
+        canvas.bind('<Configure>', _on_canvas_configure)
+        dialog.update_idletasks()
+        dialog.minsize(900, 700)
+        
+        # Summary section (modern, sectioned layout)
+        summary_frame = tk.Frame(container, bg='white')
+        summary_frame.pack(fill='x', pady=(0, 10))
 
-Financial Summary:
-Subtotal: ${ticket.get('subtotal', 0):.2f}
-Tax: ${ticket.get('tax_amount', 0):.2f}
-Total: ${ticket.get('total', 0):.2f}
-"""
-        info_text.insert('1.0', summary)
-        info_text.config(state='disabled')
+        # Top meta bar
+        meta = tk.Frame(summary_frame, bg='#f4f7fb')
+        meta.pack(fill='x', padx=10, pady=(10, 5))
+        def kv(parent, key, val, col):
+            tk.Label(parent, text=key, font=('Segoe UI', 9, 'bold'), bg=parent['bg']).grid(row=0, column=col, sticky='w', padx=(0,10))
+            tk.Label(parent, text=val, font=('Segoe UI', 10), bg=parent['bg']).grid(row=1, column=col, sticky='w', padx=(0,10))
+        kv(meta, 'Status', ticket.get('status',''), 0)
+        kv(meta, 'Opened', ticket.get('date_opened',''), 1)
+        kv(meta, 'Closed', ticket.get('date_closed') or '—', 2)
 
-        # Notes tab (editable)
-        notes_frame = tk.Frame(notebook)
-        notebook.add(notes_frame, text='Notes')
-        tk.Label(notes_frame, text="Customer Notes (printed on invoice):").pack(anchor='w', padx=10, pady=(10, 0))
-        notes_text = tk.Text(notes_frame, wrap='word', height=10)
-        notes_text.pack(fill='both', expand=True, padx=10, pady=10)
-        notes_text.insert('1.0', ticket.get('customer_notes', '') or '')
-        
-        def save_notes():
-            content = notes_text.get('1.0', 'end').strip()
-            try:
-                service.set_ticket_notes(ticket_id, content)
-                messagebox.showinfo("Success", "Notes saved")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to save notes: {e}")
-        
-        tk.Button(notes_frame, text="Save Notes", command=save_notes, bg='#5cb85c', fg='white').pack(anchor='e', padx=10, pady=(0,10))
-        
-        # Parts tab
-        parts_frame = tk.Frame(notebook)
-        notebook.add(parts_frame, text='Parts')
-        
-        parts_tree = ttk.Treeview(parts_frame, columns=('Part', 'Quantity', 'Price', 'Total'), show='headings')
+        # Top row: three equal-width responsive cards (Customer/Boat/Engine, Totals, Parts)
+        cards = tk.Frame(summary_frame, bg='white')
+        cards.pack(fill='x', padx=10, pady=5)
+        # Make three equal columns that stretch with window
+        cards.grid_columnconfigure(0, weight=1, uniform='cards')
+        cards.grid_columnconfigure(1, weight=1, uniform='cards')
+        cards.grid_columnconfigure(2, weight=1, uniform='cards')
+        cards.grid_rowconfigure(0, minsize=220)
+
+        left = tk.Frame(cards, bg='white', bd=1, relief='groove')
+        middle = tk.Frame(cards, bg='white', bd=1, relief='groove')
+        right = tk.Frame(cards, bg='white', bd=1, relief='groove')
+        left.grid(row=0, column=0, sticky='nsew', padx=(0,5))
+        middle.grid(row=0, column=1, sticky='nsew', padx=5)
+        right.grid(row=0, column=2, sticky='nsew', padx=(5,0))
+
+        # Left: Customer, Boat, and Engine
+        tk.Label(left, text='Customer', font=('Segoe UI', 12, 'bold'), bg='white').grid(row=0, column=0, sticky='w', padx=10, pady=(10,0))
+        tk.Label(left, text=ticket.get('customer_name',''), font=('Segoe UI', 10), bg='white').grid(row=1, column=0, sticky='w', padx=10)
+        tk.Label(left, text=(ticket.get('customer_phone') or 'N/A'), font=('Segoe UI', 10), bg='white', fg='#444').grid(row=2, column=0, sticky='w', padx=10, pady=(0,10))
+
+        tk.Label(left, text='Boat', font=('Segoe UI', 12, 'bold'), bg='white').grid(row=3, column=0, sticky='w', padx=10)
+        boat_line = f"{ticket.get('boat_year','') or ''} {ticket.get('boat_make','') or ''} {ticket.get('boat_model','') or ''}".strip()
+        tk.Label(left, text=(boat_line or 'N/A'), font=('Segoe UI', 10), bg='white').grid(row=4, column=0, sticky='w', padx=10, pady=(0,10))
+
+        tk.Label(left, text='Engine', font=('Segoe UI', 12, 'bold'), bg='white').grid(row=5, column=0, sticky='w', padx=10)
+        eng_parts = [str(ticket.get('engine_year') or ''), ticket.get('engine_make') or '', ticket.get('engine_model') or '', f"{ticket.get('engine_hp') or ''} HP", ticket.get('engine_type') or '']
+        eng_line = ' '.join([p for p in eng_parts if p]).strip()
+        tk.Label(left, text=(eng_line or 'N/A'), font=('Segoe UI', 10), bg='white').grid(row=6, column=0, sticky='w', padx=10, pady=(0,10))
+
+        # Middle: Totals including Parts/Labor totals
+        parts_total = sum([(p.get('quantity_used') or 0) * (p.get('price') or 0.0) for p in (ticket.get('parts') or [])])
+        labor_total = sum([(l.get('hours_worked') or 0.0) * (l.get('labor_rate') or 0.0) for l in (ticket.get('labor') or [])])
+        tk.Label(middle, text='Totals', font=('Segoe UI', 12, 'bold'), bg='white').grid(row=0, column=0, sticky='w', padx=10, pady=(10,0))
+        totals = tk.Frame(middle, bg='white')
+        totals.grid(row=1, column=0, sticky='nw', padx=10, pady=(0,10))
+        tk.Label(totals, text=f"Parts Total: ${parts_total:.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(totals, text=f"Labor Total: ${labor_total:.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(totals, text=f"Subtotal: ${ticket.get('subtotal',0):.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(totals, text=f"Tax: ${ticket.get('tax_amount',0):.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(totals, text=f"Total: ${ticket.get('total',0):.2f}", font=('Segoe UI', 11, 'bold'), bg='white').pack(anchor='w')
+
+        # Right: Parts table (moved up into top row)
+        tk.Label(right, text='Parts', font=('Segoe UI', 12, 'bold'), bg='white').pack(anchor='w', padx=10, pady=(10,0))
+        parts_table_frame = tk.Frame(right, bg='white')
+        parts_table_frame.pack(fill='both', expand=True, padx=10, pady=(0,5))
+        parts_tree = ttk.Treeview(parts_table_frame, columns=('Part', 'Quantity', 'Price', 'Total'), show='headings', height=6)
         parts_tree.heading('Part', text='Part Name')
         parts_tree.heading('Quantity', text='Quantity')
         parts_tree.heading('Price', text='Unit Price')
         parts_tree.heading('Total', text='Total')
-        parts_tree.pack(fill='both', expand=True, padx=10, pady=5)
-        
+        parts_tree.pack(side='left', fill='both', expand=True)
+        parts_scroll = ttk.Scrollbar(parts_table_frame, orient='vertical', command=parts_tree.yview)
+        parts_scroll.pack(side='right', fill='y')
+        parts_tree.configure(yscrollcommand=parts_scroll.set)
         for part in ticket.get('parts', []):
             total = part['quantity_used'] * part['price']
             item_id = parts_tree.insert('', 'end', values=(
@@ -1019,49 +1062,74 @@ Total: ${ticket.get('total', 0):.2f}
                 f"${part['price']:.2f}",
                 f"${total:.2f}"
             ))
-            # Store ticket_part_id in item tags for deletion
             parts_tree.item(item_id, tags=(part['ticket_part_id'],))
-        
-        def delete_selected_part():
-            selection = parts_tree.selection()
-            if not selection:
-                messagebox.showwarning("Warning", "Please select a part to delete")
-                return
-            
-            if not messagebox.askyesno("Confirm Delete", "Delete this part from the ticket?"):
-                return
-            
-            try:
-                ticket_part_id = int(parts_tree.item(selection[0])['tags'][0])
-                service.delete_ticket_part(ticket_part_id)
-                service.calculate_ticket_totals(ticket_id)
-                messagebox.showinfo("Success", "Part deleted")
-                dialog.destroy()
-                self.show_tickets()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to delete part: {e}")
-        
-        parts_btn_frame = tk.Frame(parts_frame)
-        parts_btn_frame.pack(pady=5)
+        parts_btn_frame = tk.Frame(right, bg='white')
+        parts_btn_frame.pack(padx=10, pady=(0,10), anchor='w')
         tk.Button(parts_btn_frame, text="➕ Add Part", 
                  command=lambda: self.add_part_to_ticket(ticket_id, dialog),
                  bg='#5cb85c', fg='white').pack(side='left', padx=5)
         tk.Button(parts_btn_frame, text="🗑 Delete Selected", 
-                 command=delete_selected_part,
+                 command=lambda: self._delete_selected_part(parts_tree, ticket_id, dialog),
                  bg='#d9534f', fg='white').pack(side='left', padx=5)
-        
-        # Labor tab
-        labor_frame = tk.Frame(notebook)
-        notebook.add(labor_frame, text='Labor')
-        
-        labor_tree = ttk.Treeview(labor_frame, columns=('Mechanic', 'Hours', 'Rate', 'Total', 'Description'), show='headings')
-        labor_tree.heading('Mechanic', text='Mechanic')
-        labor_tree.heading('Hours', text='Hours')
-        labor_tree.heading('Rate', text='Rate')
-        labor_tree.heading('Total', text='Total')
-        labor_tree.heading('Description', text='Work Description')
-        labor_tree.pack(fill='both', expand=True, padx=10, pady=5)
-        
+
+        # Second row: left (Description + Notes), right (Labor + Payments)
+        second_row = tk.Frame(container, bg='white')
+        second_row.pack(fill='both', expand=True, padx=10, pady=(0,10))
+        # Use grid for two-column layout so right column stays visible
+        # Favor a wider left column for Description/Notes
+        second_row.grid_columnconfigure(0, weight=3, minsize=420)
+        second_row.grid_columnconfigure(1, weight=2, minsize=360)
+        second_row.grid_rowconfigure(0, weight=1)
+
+        left_stack = tk.Frame(second_row, bg='white', bd=1, relief='groove')
+        right_stack = tk.Frame(second_row, bg='white')
+        left_stack.grid(row=0, column=0, sticky='nsew', padx=(0,5))
+        right_stack.grid(row=0, column=1, sticky='nsew', padx=(5,0))
+
+        # Description card
+        desc_card = tk.Frame(left_stack, bg='white', bd=1, relief='groove')
+        desc_card.pack(fill='x', padx=10, pady=(10,5))
+        tk.Label(desc_card, text='Description', font=('Segoe UI', 12, 'bold'), bg='white').pack(anchor='w', padx=10, pady=(10,0))
+        desc_text = tk.Text(desc_card, height=9, wrap='word')
+        desc_text.pack(fill='x', padx=10, pady=(0,10))
+        desc_text.insert('1.0', ticket.get('description') or '')
+        desc_text.config(state='disabled')
+
+        # Customer Notes card
+        notes_card = tk.Frame(left_stack, bg='white', bd=1, relief='groove')
+        notes_card.pack(fill='x', padx=10, pady=(0,10))
+        tk.Label(notes_card, text='Customer Notes', font=('Segoe UI', 12, 'bold'), bg='white').pack(anchor='w', padx=10, pady=(10,0))
+        notes_text = tk.Text(notes_card, height=8, wrap='word')
+        notes_text.pack(fill='x', padx=10, pady=(0,10))
+        notes_text.insert('1.0', ticket.get('customer_notes', '') or '')
+        def save_notes():
+            content = notes_text.get('1.0', 'end').strip()
+            try:
+                service.set_ticket_notes(ticket_id, content)
+                messagebox.showinfo("Success", "Notes saved")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save notes: {e}")
+        tk.Button(notes_card, text="Save Notes", command=save_notes, bg='#5cb85c', fg='white').pack(anchor='e', padx=10, pady=(0,10))
+
+        # Labor card
+        labor_card = tk.Frame(right_stack, bg='white', bd=1, relief='groove')
+        labor_card.pack(fill='x', padx=10, pady=(10,10))
+        tk.Label(labor_card, text='Labor', font=('Segoe UI', 12, 'bold'), bg='white').pack(anchor='w', padx=10, pady=(10,0))
+        labor_table_frame = tk.Frame(labor_card, bg='white')
+        labor_table_frame.pack(fill='x', padx=10, pady=(0,5))
+        labor_tree = ttk.Treeview(labor_table_frame, columns=('Mechanic','Hours','Rate','Total','Description'), show='headings', height=6)
+        for col, text in [('Mechanic','Mechanic'),('Hours','Hours'),('Rate','Rate'),('Total','Total'),('Description','Description')]:
+            labor_tree.heading(col, text=text)
+        labor_tree.pack(side='left', fill='x', expand=True)
+        labor_scroll = ttk.Scrollbar(labor_table_frame, orient='vertical', command=labor_tree.yview)
+        labor_scroll.pack(side='right', fill='y')
+        labor_tree.configure(yscrollcommand=labor_scroll.set)
+        # Keep labor table reasonable in width
+        labor_tree.column('Mechanic', width=120)
+        labor_tree.column('Hours', width=60, anchor='e')
+        labor_tree.column('Rate', width=80, anchor='e')
+        labor_tree.column('Total', width=90, anchor='e')
+        labor_tree.column('Description', width=260)
         for labor in ticket.get('labor', []):
             total = labor['hours_worked'] * labor['labor_rate']
             item_id = labor_tree.insert('', 'end', values=(
@@ -1069,69 +1137,51 @@ Total: ${ticket.get('total', 0):.2f}
                 labor['hours_worked'],
                 f"${labor['labor_rate']:.2f}",
                 f"${total:.2f}",
-                labor.get('work_description', '')[:50]
+                (labor.get('work_description') or '')[:40]
             ))
-            # Store assignment_id in item tags for deletion
             labor_tree.item(item_id, tags=(labor['assignment_id'],))
-        
-        def delete_selected_labor():
-            selection = labor_tree.selection()
-            if not selection:
-                messagebox.showwarning("Warning", "Please select a labor entry to delete")
-                return
-            
-            if not messagebox.askyesno("Confirm Delete", "Delete this labor entry from the ticket?"):
-                return
-            
-            try:
-                assignment_id = int(labor_tree.item(selection[0])['tags'][0])
-                service.delete_ticket_labor(assignment_id)
-                service.calculate_ticket_totals(ticket_id)
-                messagebox.showinfo("Success", "Labor entry deleted")
-                dialog.destroy()
-                self.show_tickets()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to delete labor: {e}")
-        
-        labor_btn_frame = tk.Frame(labor_frame)
-        labor_btn_frame.pack(pady=5)
-        tk.Button(labor_btn_frame, text="➕ Add Labor", 
-                 command=lambda: self.add_labor_to_ticket(ticket_id, dialog),
-                 bg='#5cb85c', fg='white').pack(side='left', padx=5)
-        tk.Button(labor_btn_frame, text="🗑 Delete Selected", 
-                 command=delete_selected_labor,
-                 bg='#d9534f', fg='white').pack(side='left', padx=5)
-        
-        # Deposits tab
-        deposits_frame = tk.Frame(notebook)
-        notebook.add(deposits_frame, text='Deposits')
-        
-        deposits = service.get_ticket_deposits(ticket_id)
+        labor_btns = tk.Frame(labor_card, bg='white')
+        labor_btns.pack(anchor='w', padx=10, pady=(0,10))
+        tk.Button(labor_btns, text="➕ Add Labor", command=lambda: self.add_labor_to_ticket(ticket_id, dialog), bg='#5cb85c', fg='white').pack(side='left', padx=5)
+        tk.Button(labor_btns, text="🗑 Delete Selected", command=lambda: self._delete_selected_labor(labor_tree, ticket_id, dialog), bg='#d9534f', fg='white').pack(side='left', padx=5)
+
+        # Payments card
+        payments_card = tk.Frame(right_stack, bg='white', bd=1, relief='groove')
+        payments_card.pack(fill='x', padx=10, pady=(0,10))
+        deposits = service.get_ticket_deposits(ticket_id) or []
         balance_due = service.calculate_balance_due(ticket_id)
-        
-        tk.Label(deposits_frame, text=f"Balance Due: ${balance_due:.2f}", 
-                font=('Segoe UI', 14, 'bold'), fg='red' if balance_due > 0 else 'green').pack(pady=10)
-        
-        deposits_tree = ttk.Treeview(deposits_frame, columns=('Date', 'Amount', 'Method', 'Notes'), show='headings')
-        deposits_tree.heading('Date', text='Date')
-        deposits_tree.heading('Amount', text='Amount')
-        deposits_tree.heading('Method', text='Method')
-        deposits_tree.heading('Notes', text='Notes')
-        deposits_tree.pack(fill='both', expand=True, padx=10, pady=10)
-        
+        tk.Label(payments_card, text='Payments', font=('Segoe UI', 12, 'bold'), bg='white').pack(anchor='w', padx=10, pady=(10,0))
+        tk.Label(payments_card, text=f"Balance Due: ${balance_due:.2f}", font=('Segoe UI', 10, 'bold'), fg=('red' if balance_due>0 else 'green'), bg='white').pack(anchor='w', padx=10)
+        pay_table_frame = tk.Frame(payments_card, bg='white')
+        pay_table_frame.pack(fill='x', padx=10, pady=(5,5))
+        deposits_tree = ttk.Treeview(pay_table_frame, columns=('Date','Amount','Method','Notes'), show='headings', height=5)
+        for col,text in [('Date','Date'),('Amount','Amount'),('Method','Method'),('Notes','Notes')]:
+            deposits_tree.heading(col, text=text)
+        deposits_tree.pack(side='left', fill='x', expand=True)
+        deposits_scroll = ttk.Scrollbar(pay_table_frame, orient='vertical', command=deposits_tree.yview)
+        deposits_scroll.pack(side='right', fill='y')
+        deposits_tree.configure(yscrollcommand=deposits_scroll.set)
+        # Keep payments table compact
+        deposits_tree.column('Date', width=120)
+        deposits_tree.column('Amount', width=100, anchor='e')
+        deposits_tree.column('Method', width=120)
+        deposits_tree.column('Notes', width=220)
         for dep in deposits:
             deposits_tree.insert('', 'end', values=(
                 dep['payment_date'],
                 f"${dep['amount']:.2f}",
                 dep.get('payment_method') or 'N/A',
-                (dep.get('notes') or '')[:50]
+                (dep.get('notes') or '')[:40]
             ))
-        
-        deposits_btn_frame = tk.Frame(deposits_frame)
-        deposits_btn_frame.pack(pady=5)
-        tk.Button(deposits_btn_frame, text="💵 Add Payment", 
-                 command=lambda: self.add_deposit_to_ticket(ticket_id, dialog),
-                 bg='#5cb85c', fg='white').pack(side='left', padx=5)
+        tk.Button(payments_card, text="💵 Add Payment", command=lambda: self.add_deposit_to_ticket(ticket_id, dialog), bg='#5cb85c', fg='white').pack(anchor='w', padx=10, pady=(0,10))
+
+        # Ensure canvas computes layout and becomes scrollable
+        try:
+            canvas.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox('all'))
+            canvas.yview_moveto(0)
+        except Exception:
+            pass
         
         # Buttons
         btn_frame = tk.Frame(dialog)
@@ -1139,6 +1189,41 @@ Total: ${ticket.get('total', 0):.2f}
         tk.Button(btn_frame, text="📄 Print PDF", command=lambda: self.print_ticket_pdf(ticket_id), 
                  bg='#5cb85c', fg='white', font=('Segoe UI', 10)).pack(side='left', padx=5)
         tk.Button(btn_frame, text="Close", command=dialog.destroy, font=('Segoe UI', 10)).pack(side='left', padx=5)
+
+    # ===== Helper methods for ticket details deletion =====
+    def _delete_selected_part(self, parts_tree, ticket_id, parent_dialog):
+        selection = parts_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a part to delete")
+            return
+        if not messagebox.askyesno("Confirm Delete", "Delete this part from the ticket?"):
+            return
+        try:
+            ticket_part_id = int(parts_tree.item(selection[0])['tags'][0])
+            service.delete_ticket_part(ticket_part_id)
+            service.calculate_ticket_totals(ticket_id)
+            messagebox.showinfo("Success", "Part deleted")
+            parent_dialog.destroy()
+            self.show_tickets()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete part: {e}")
+
+    def _delete_selected_labor(self, labor_tree, ticket_id, parent_dialog):
+        selection = labor_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a labor entry to delete")
+            return
+        if not messagebox.askyesno("Confirm Delete", "Delete this labor entry from the ticket?"):
+            return
+        try:
+            assignment_id = int(labor_tree.item(selection[0])['tags'][0])
+            service.delete_ticket_labor(assignment_id)
+            service.calculate_ticket_totals(ticket_id)
+            messagebox.showinfo("Success", "Labor entry deleted")
+            parent_dialog.destroy()
+            self.show_tickets()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete labor: {e}")
     
     def add_ticket_part_dialog(self, tree):
         """Add part to selected ticket."""
@@ -2667,6 +2752,88 @@ Notes:
                 messagebox.showerror("Error", f"Failed to add engine: {e}")
         
         tk.Button(dialog, text="Add Engine", command=save, bg='#5cb85c', fg='white').grid(row=7, column=0, columnspan=2, pady=20)
+
+    def quick_add_customer_dialog(self, customer_combo, customer_var):
+        """Quick-add customer dialog used from ticket creation."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Customer")
+        dialog.geometry("400x360")
+
+        tk.Label(dialog, text="Name:*").grid(row=0, column=0, sticky='e', padx=5, pady=5)
+        name_entry = tk.Entry(dialog, width=30)
+        name_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        tk.Label(dialog, text="Phone:").grid(row=1, column=0, sticky='e', padx=5, pady=5)
+        phone_entry = tk.Entry(dialog, width=30)
+        phone_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        tk.Label(dialog, text="Email:").grid(row=2, column=0, sticky='e', padx=5, pady=5)
+        email_entry = tk.Entry(dialog, width=30)
+        email_entry.grid(row=2, column=1, padx=5, pady=5)
+
+        tk.Label(dialog, text="Address:").grid(row=3, column=0, sticky='e', padx=5, pady=5)
+        address_text = tk.Text(dialog, width=30, height=3)
+        address_text.grid(row=3, column=1, padx=5, pady=5)
+
+        tax_exempt_var = tk.IntVar()
+        tk.Checkbutton(dialog, text="Tax Exempt", variable=tax_exempt_var).grid(row=4, column=1, sticky='w', padx=5, pady=5)
+
+        tk.Label(dialog, text="Certificate #:").grid(row=5, column=0, sticky='e', padx=5, pady=5)
+        cert_entry = tk.Entry(dialog, width=30)
+        cert_entry.grid(row=5, column=1, padx=5, pady=5)
+
+        out_of_state_var = tk.IntVar()
+        tk.Checkbutton(dialog, text="Out of State", variable=out_of_state_var).grid(row=6, column=1, sticky='w', padx=5, pady=5)
+
+        def save():
+            name = name_entry.get().strip()
+            if not name:
+                messagebox.showerror("Error", "Name is required")
+                return
+
+            phone = phone_entry.get().strip() or None
+            if phone:
+                valid, formatted_phone, error = service.validate_phone(phone)
+                if not valid:
+                    messagebox.showerror("Validation Error", error)
+                    return
+                phone = formatted_phone
+
+            email = email_entry.get().strip() or None
+            if email:
+                valid, error = service.validate_email(email)
+                if not valid:
+                    messagebox.showerror("Validation Error", error)
+                    return
+
+            try:
+                new_id = service.create_customer(
+                    name,
+                    phone,
+                    email,
+                    address_text.get('1.0', 'end').strip() or None,
+                    tax_exempt_var.get(),
+                    cert_entry.get().strip() or None,
+                    out_of_state_var.get()
+                )
+
+                # Refresh customer dropdown values
+                customers = service.list_customers()
+                customer_choices = [f"{c['customer_id']} - {c['name']}" for c in customers]
+                customer_combo['values'] = customer_choices
+                # Select the newly added customer
+                for choice in customer_choices:
+                    if choice.startswith(f"{new_id} - "):
+                        customer_combo.set(choice)
+                        customer_var.set(choice)
+                        break
+
+                messagebox.showinfo("Success", "Customer added successfully")
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to add customer: {e}")
+
+        tk.Button(dialog, text="Save", command=save, bg='#5cb85c', fg='white').grid(row=7, column=0, columnspan=2, pady=20)
     
     def add_part_to_ticket(self, ticket_id, parent_dialog):
         """Add part to ticket from detail view."""

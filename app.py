@@ -35,6 +35,84 @@ class CajunMarineApp:
             print(f"Warning: {message}")
         
         self.create_ui()
+    
+    # ============ Helper Methods ============
+    
+    def get_selected_id(self, tree, item_name="item"):
+        """Get selected item ID from tree. Returns ID or None with error message."""
+        selection = tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", f"Please select a {item_name}")
+            return None
+        return tree.item(selection[0])['values'][0]
+    
+    def fetch_boat_by_id(self, boat_id):
+        """Fetch boat details from database. Returns dict or None."""
+        if not boat_id:
+            return None
+        try:
+            conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM Boats WHERE boat_id = ?", (boat_id,))
+            row = cur.fetchone()
+            result = dict(row) if row else None
+            conn.close()
+            return result
+        except Exception:
+            return None
+    
+    def fetch_engine_by_id(self, engine_id):
+        """Fetch engine details from database. Returns dict or None."""
+        if not engine_id:
+            return None
+        try:
+            conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM Engines WHERE engine_id = ?", (engine_id,))
+            row = cur.fetchone()
+            result = dict(row) if row else None
+            conn.close()
+            return result
+        except Exception:
+            return None
+    
+    def populate_boat_dropdown(self, customer_id, boat_combo, boat_var):
+        """Populate boat dropdown for a customer."""
+        if not customer_id:
+            boat_combo['values'] = []
+            boat_combo.set('')
+            boat_combo['state'] = 'disabled'
+            return
+        
+        boats = service.get_customer_boats(customer_id)
+        if boats:
+            boat_choices = [f"{b['boat_id']} - {b.get('year', 'N/A')} {b.get('make', '')} {b.get('model', '')}" for b in boats]
+            boat_combo['values'] = boat_choices
+            boat_combo['state'] = 'readonly'
+        else:
+            boat_combo['values'] = []
+            boat_combo.set('')
+            boat_combo['state'] = 'disabled'
+    
+    def populate_engine_dropdown(self, boat_id, engine_combo, engine_var):
+        """Populate engine dropdown for a boat."""
+        if not boat_id:
+            engine_combo['values'] = []
+            engine_combo.set('')
+            engine_combo['state'] = 'disabled'
+            return
+        
+        engines = service.get_boat_engines(boat_id)
+        if engines:
+            engine_choices = [f"{e['engine_id']} - {e.get('make', '')} {e.get('model', '')} ({e.get('hp', 'N/A')} HP)" for e in engines]
+            engine_combo['values'] = engine_choices
+            engine_combo['state'] = 'readonly'
+        else:
+            engine_combo['values'] = []
+            engine_combo.set('')
+            engine_combo['state'] = 'disabled'
         
     def create_ui(self):
         """Create main UI structure."""
@@ -233,6 +311,15 @@ class CajunMarineApp:
         
         tk.Button(
             header,
+            text="Import from Excel",
+            font=('Segoe UI', 11),
+            bg='#f0ad4e',
+            fg='white',
+            command=lambda: self.import_customers_from_excel(tree)
+        ).pack(side='right', padx=(5, 0))
+        
+        tk.Button(
+            header,
             text="+ Add Customer",
             font=('Segoe UI', 11),
             bg='#5cb85c',
@@ -264,12 +351,16 @@ class CajunMarineApp:
         )
         scrollbar.config(command=tree.yview)
         
-        tree.heading('ID', text='ID')
-        tree.heading('Name', text='Name')
-        tree.heading('Phone', text='Phone')
-        tree.heading('Email', text='Email')
-        tree.heading('Tax Exempt', text='Tax Exempt')
-        tree.heading('Out of State', text='Out of State')
+        # Enable column sorting
+        self.customer_sort_column = 'Name'
+        self.customer_sort_reverse = False
+        
+        tree.heading('ID', text='ID', command=lambda: self.sort_customers(tree, 'ID'))
+        tree.heading('Name', text='Name ▼', command=lambda: self.sort_customers(tree, 'Name'))
+        tree.heading('Phone', text='Phone', command=lambda: self.sort_customers(tree, 'Phone'))
+        tree.heading('Email', text='Email', command=lambda: self.sort_customers(tree, 'Email'))
+        tree.heading('Tax Exempt', text='Tax Exempt', command=lambda: self.sort_customers(tree, 'Tax Exempt'))
+        tree.heading('Out of State', text='Out of State', command=lambda: self.sort_customers(tree, 'Out of State'))
         
         tree.column('ID', width=50)
         tree.column('Name', width=200)
@@ -290,15 +381,49 @@ class CajunMarineApp:
         """Load customers into tree."""
         tree.delete(*tree.get_children())
         customers = service.list_customers()
+        
+        # Sort customers based on current sort settings
+        col_map = {'ID': 'customer_id', 'Name': 'name', 'Phone': 'phone', 'Email': 'email', 
+                   'Tax Exempt': 'tax_exempt', 'Out of State': 'out_of_state'}
+        sort_key = col_map.get(self.customer_sort_column, 'name')
+        
+        # Handle different data types for sorting
+        if sort_key in ('customer_id', 'tax_exempt', 'out_of_state'):
+            # Numeric fields
+            customers.sort(key=lambda x: (x.get(sort_key) or 0), reverse=self.customer_sort_reverse)
+        else:
+            # String fields
+            customers.sort(key=lambda x: (x.get(sort_key) or '').lower(), reverse=self.customer_sort_reverse)
+        
         for c in customers:
             tree.insert('', 'end', values=(
                 c['customer_id'],
                 c['name'],
-                c.get('phone', ''),
-                c.get('email', ''),
+                c.get('phone') or '',
+                c.get('email') or '',
                 'Yes' if c.get('tax_exempt') else 'No',
                 'Yes' if c.get('out_of_state') else 'No'
             ))
+    
+    def sort_customers(self, tree, column):
+        """Sort customers by column."""
+        # Toggle sort direction if same column, otherwise default to ascending
+        if self.customer_sort_column == column:
+            self.customer_sort_reverse = not self.customer_sort_reverse
+        else:
+            self.customer_sort_column = column
+            self.customer_sort_reverse = False
+        
+        # Update column headings to show sort indicator
+        for col in ('ID', 'Name', 'Phone', 'Email', 'Tax Exempt', 'Out of State'):
+            if col == column:
+                indicator = ' ▼' if not self.customer_sort_reverse else ' ▲'
+                tree.heading(col, text=col + indicator)
+            else:
+                tree.heading(col, text=col)
+        
+        # Reload customers with new sort
+        self.load_customers(tree)
     
     def filter_customers(self, tree, search_term):
         """Filter customers by search term."""
@@ -307,16 +432,53 @@ class CajunMarineApp:
         search_lower = search_term.lower()
         for c in customers:
             if (search_lower in c['name'].lower() or 
-                search_lower in c.get('phone', '').lower() or
-                search_lower in c.get('email', '').lower()):
+                search_lower in (c.get('phone') or '').lower() or
+                search_lower in (c.get('email') or '').lower()):
                 tree.insert('', 'end', values=(
                     c['customer_id'],
                     c['name'],
-                    c.get('phone', ''),
-                    c.get('email', ''),
+                    c.get('phone') or '',
+                    c.get('email') or '',
                     'Yes' if c.get('tax_exempt') else 'No',
                     'Yes' if c.get('out_of_state') else 'No'
                 ))
+    
+    def import_customers_from_excel(self, tree):
+        """Import customers from Excel file."""
+        from tkinter import filedialog
+        
+        file_path = filedialog.askopenfilename(
+            title="Select Excel File",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            created, updated, errors = service.import_customers_from_excel(file_path)
+            
+            # Show results
+            message = f"Import completed:\n\n"
+            message += f"✓ Created: {created} customers\n"
+            message += f"✓ Updated: {updated} customers\n"
+            
+            if errors:
+                message += f"\n⚠ Errors ({len(errors)}):\n"
+                message += "\n".join(errors[:5])  # Show first 5 errors
+                if len(errors) > 5:
+                    message += f"\n... and {len(errors) - 5} more"
+            
+            if errors:
+                messagebox.showwarning("Import Completed with Errors", message)
+            else:
+                messagebox.showinfo("Import Successful", message)
+            
+            # Refresh customer list
+            self.show_customers()
+            
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Failed to import: {str(e)}")
     
     def add_customer_dialog(self):
         """Show add customer dialog."""
@@ -418,17 +580,17 @@ class CajunMarineApp:
         
         tk.Label(dialog, text="Phone:").grid(row=1, column=0, sticky='e', padx=5, pady=5)
         phone_entry = tk.Entry(dialog, width=30)
-        phone_entry.insert(0, customer.get('phone', ''))
+        phone_entry.insert(0, customer.get('phone') or '')
         phone_entry.grid(row=1, column=1, padx=5, pady=5)
         
         tk.Label(dialog, text="Email:").grid(row=2, column=0, sticky='e', padx=5, pady=5)
         email_entry = tk.Entry(dialog, width=30)
-        email_entry.insert(0, customer.get('email', ''))
+        email_entry.insert(0, customer.get('email') or '')
         email_entry.grid(row=2, column=1, padx=5, pady=5)
         
         tk.Label(dialog, text="Address:").grid(row=3, column=0, sticky='e', padx=5, pady=5)
         address_text = tk.Text(dialog, width=30, height=3)
-        address_text.insert('1.0', customer.get('address', ''))
+        address_text.insert('1.0', customer.get('address') or '')
         address_text.grid(row=3, column=1, padx=5, pady=5)
         
         tax_exempt_var = tk.IntVar(value=customer.get('tax_exempt', 0))
@@ -436,7 +598,7 @@ class CajunMarineApp:
         
         tk.Label(dialog, text="Certificate #:").grid(row=5, column=0, sticky='e', padx=5, pady=5)
         cert_entry = tk.Entry(dialog, width=30)
-        cert_entry.insert(0, customer.get('tax_exempt_certificate', ''))
+        cert_entry.insert(0, customer.get('tax_exempt_certificate') or '')
         cert_entry.grid(row=5, column=1, padx=5, pady=5)
         
         out_of_state_var = tk.IntVar(value=customer.get('out_of_state', 0))
@@ -526,14 +688,14 @@ class CajunMarineApp:
         tree.heading('Opened', text='Date Opened')
         tree.heading('Total', text='Total')
         
-        tree.column('ID', width=80)
-        tree.column('Customer', width=200)
-        tree.column('Boat', width=150)
-        tree.column('Engine', width=180)
-        tree.column('Description', width=250)
-        tree.column('Status', width=130)
-        tree.column('Opened', width=110)
-        tree.column('Total', width=100)
+        tree.column('ID', width=70)
+        tree.column('Customer', width=180)
+        tree.column('Boat', width=140)
+        tree.column('Engine', width=280)
+        tree.column('Description', width=220)
+        tree.column('Status', width=120)
+        tree.column('Opened', width=100)
+        tree.column('Total', width=90)
         
         tree.pack(fill='both', expand=True)
         
@@ -588,7 +750,7 @@ class CajunMarineApp:
             def commit_change(*args):
                 new_status = status_var.get()
                 # Persist via service
-                ticket_id = values[0]
+                ticket_id = int(values[0])
                 try:
                     service.update_ticket_status(ticket_id, new_status)
                     # Update tree display
@@ -634,7 +796,12 @@ class CajunMarineApp:
                 eng_model = details.get('engine_model', '')
                 eng_hp = details.get('engine_hp', '')
                 eng_year = details.get('engine_year', '')
-                engine_summary = f"{eng_make} {eng_model} {eng_hp}HP {eng_type} {eng_year}".strip()
+                eng_outdrive = details.get('engine_outdrive', '')
+                # Format: Year Make Model HP Type (Outdrive if sterndrive)
+                parts = [str(eng_year), eng_make, eng_model, f"{eng_hp}HP" if eng_hp else '', eng_type]
+                if eng_type and 'sterndrive' in eng_type.lower() and eng_outdrive:
+                    parts.append(f"({eng_outdrive})")
+                engine_summary = ' '.join(p for p in parts if p).strip()
                 engine_summary = ' '.join(engine_summary.split())  # normalize spaces
 
             tree.insert('', 'end', values=(
@@ -776,7 +943,7 @@ class CajunMarineApp:
         
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Ticket #{ticket_id} Details")
-        dialog.geometry("800x600")
+        dialog.geometry("800x650")
         
         # Header
         header = tk.Frame(dialog, bg='#2d6a9f')
@@ -846,18 +1013,42 @@ Total: ${ticket.get('total', 0):.2f}
         
         for part in ticket.get('parts', []):
             total = part['quantity_used'] * part['price']
-            parts_tree.insert('', 'end', values=(
+            item_id = parts_tree.insert('', 'end', values=(
                 part['part_name'],
                 part['quantity_used'],
                 f"${part['price']:.2f}",
                 f"${total:.2f}"
             ))
+            # Store ticket_part_id in item tags for deletion
+            parts_tree.item(item_id, tags=(part['ticket_part_id'],))
+        
+        def delete_selected_part():
+            selection = parts_tree.selection()
+            if not selection:
+                messagebox.showwarning("Warning", "Please select a part to delete")
+                return
+            
+            if not messagebox.askyesno("Confirm Delete", "Delete this part from the ticket?"):
+                return
+            
+            try:
+                ticket_part_id = int(parts_tree.item(selection[0])['tags'][0])
+                service.delete_ticket_part(ticket_part_id)
+                service.calculate_ticket_totals(ticket_id)
+                messagebox.showinfo("Success", "Part deleted")
+                dialog.destroy()
+                self.show_tickets()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete part: {e}")
         
         parts_btn_frame = tk.Frame(parts_frame)
         parts_btn_frame.pack(pady=5)
         tk.Button(parts_btn_frame, text="➕ Add Part", 
                  command=lambda: self.add_part_to_ticket(ticket_id, dialog),
                  bg='#5cb85c', fg='white').pack(side='left', padx=5)
+        tk.Button(parts_btn_frame, text="🗑 Delete Selected", 
+                 command=delete_selected_part,
+                 bg='#d9534f', fg='white').pack(side='left', padx=5)
         
         # Labor tab
         labor_frame = tk.Frame(notebook)
@@ -873,19 +1064,43 @@ Total: ${ticket.get('total', 0):.2f}
         
         for labor in ticket.get('labor', []):
             total = labor['hours_worked'] * labor['labor_rate']
-            labor_tree.insert('', 'end', values=(
+            item_id = labor_tree.insert('', 'end', values=(
                 labor['mechanic_name'],
                 labor['hours_worked'],
                 f"${labor['labor_rate']:.2f}",
                 f"${total:.2f}",
                 labor.get('work_description', '')[:50]
             ))
+            # Store assignment_id in item tags for deletion
+            labor_tree.item(item_id, tags=(labor['assignment_id'],))
+        
+        def delete_selected_labor():
+            selection = labor_tree.selection()
+            if not selection:
+                messagebox.showwarning("Warning", "Please select a labor entry to delete")
+                return
+            
+            if not messagebox.askyesno("Confirm Delete", "Delete this labor entry from the ticket?"):
+                return
+            
+            try:
+                assignment_id = int(labor_tree.item(selection[0])['tags'][0])
+                service.delete_ticket_labor(assignment_id)
+                service.calculate_ticket_totals(ticket_id)
+                messagebox.showinfo("Success", "Labor entry deleted")
+                dialog.destroy()
+                self.show_tickets()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete labor: {e}")
         
         labor_btn_frame = tk.Frame(labor_frame)
         labor_btn_frame.pack(pady=5)
         tk.Button(labor_btn_frame, text="➕ Add Labor", 
                  command=lambda: self.add_labor_to_ticket(ticket_id, dialog),
                  bg='#5cb85c', fg='white').pack(side='left', padx=5)
+        tk.Button(labor_btn_frame, text="🗑 Delete Selected", 
+                 command=delete_selected_labor,
+                 bg='#d9534f', fg='white').pack(side='left', padx=5)
         
         # Deposits tab
         deposits_frame = tk.Frame(notebook)
@@ -908,9 +1123,15 @@ Total: ${ticket.get('total', 0):.2f}
             deposits_tree.insert('', 'end', values=(
                 dep['payment_date'],
                 f"${dep['amount']:.2f}",
-                dep.get('payment_method', 'N/A'),
-                dep.get('notes', '')[:50]
+                dep.get('payment_method') or 'N/A',
+                (dep.get('notes') or '')[:50]
             ))
+        
+        deposits_btn_frame = tk.Frame(deposits_frame)
+        deposits_btn_frame.pack(pady=5)
+        tk.Button(deposits_btn_frame, text="💵 Add Payment", 
+                 command=lambda: self.add_deposit_to_ticket(ticket_id, dialog),
+                 bg='#5cb85c', fg='white').pack(side='left', padx=5)
         
         # Buttons
         btn_frame = tk.Frame(dialog)
@@ -921,11 +1142,10 @@ Total: ${ticket.get('total', 0):.2f}
     
     def add_ticket_part_dialog(self, tree):
         """Add part to selected ticket."""
-        selection = tree.selection()
-        if not selection:
+        ticket_id = self.get_selected_id(tree, "ticket")
+        if not ticket_id:
             return
         
-        ticket_id = tree.item(selection[0])['values'][0]
         
         dialog = tk.Toplevel(self.root)
         dialog.title("Add Part to Ticket")
@@ -973,11 +1193,10 @@ Total: ${ticket.get('total', 0):.2f}
     
     def add_ticket_labor_dialog(self, tree):
         """Add labor to selected ticket."""
-        selection = tree.selection()
-        if not selection:
+        ticket_id = self.get_selected_id(tree, "ticket")
+        if not ticket_id:
             return
         
-        ticket_id = tree.item(selection[0])['values'][0]
         
         dialog = tk.Toplevel(self.root)
         dialog.title("Add Labor to Ticket")
@@ -1092,11 +1311,10 @@ Total: ${ticket.get('total', 0):.2f}
     
     def add_deposit_dialog(self, tree):
         """Add deposit to selected ticket."""
-        selection = tree.selection()
-        if not selection:
+        ticket_id = self.get_selected_id(tree, "ticket")
+        if not ticket_id:
             return
         
-        ticket_id = tree.item(selection[0])['values'][0]
         
         dialog = tk.Toplevel(self.root)
         dialog.title("Add Deposit")
@@ -1140,11 +1358,10 @@ Total: ${ticket.get('total', 0):.2f}
     
     def change_ticket_status_dialog(self, tree):
         """Change status of selected ticket."""
-        selection = tree.selection()
-        if not selection:
+        ticket_id = self.get_selected_id(tree, "ticket")
+        if not ticket_id:
             return
         
-        ticket_id = tree.item(selection[0])['values'][0]
         
         dialog = tk.Toplevel(self.root)
         dialog.title("Change Ticket Status")
@@ -1171,6 +1388,67 @@ Total: ${ticket.get('total', 0):.2f}
                 messagebox.showerror("Error", f"Failed to update status: {e}")
         
         tk.Button(dialog, text="Update Status", command=save, bg='#5cb85c', fg='white').grid(row=1, column=0, columnspan=2, pady=20)
+    
+    def add_deposit_to_ticket(self, ticket_id, parent_dialog):
+        """Add deposit/payment to ticket from detail view."""
+        dialog = tk.Toplevel(parent_dialog)
+        dialog.title("Add Payment")
+        dialog.geometry("450x280")
+        
+        # Get current balance
+        balance_due = service.calculate_balance_due(ticket_id)
+        
+        tk.Label(dialog, text=f"Current Balance Due: ${balance_due:.2f}", 
+                font=('Segoe UI', 11, 'bold'), 
+                fg='red' if balance_due > 0 else 'green').grid(row=0, column=0, columnspan=2, pady=(10, 15))
+        
+        tk.Label(dialog, text="Amount:*").grid(row=1, column=0, sticky='e', padx=5, pady=5)
+        amount_entry = tk.Entry(dialog, width=35)
+        amount_entry.grid(row=1, column=1, padx=5, pady=5, sticky='w')
+        
+        # Quick button to pay full balance
+        tk.Button(dialog, text="Pay Full Balance", 
+                 command=lambda: amount_entry.delete(0, 'end') or amount_entry.insert(0, f"{balance_due:.2f}"),
+                 bg='#0275d8', fg='white', font=('Segoe UI', 8)).grid(row=1, column=1, sticky='e', padx=5)
+        
+        tk.Label(dialog, text="Payment Method:*").grid(row=2, column=0, sticky='e', padx=5, pady=5)
+        payment_var = tk.StringVar(value="Cash")
+        payment_combo = ttk.Combobox(dialog, textvariable=payment_var, 
+                                    values=['Cash', 'Credit Card', 'Debit Card', 'Check', 'Insurance', 'Other'], 
+                                    width=32)
+        payment_combo.grid(row=2, column=1, padx=5, pady=5, sticky='w')
+        
+        tk.Label(dialog, text="Notes:").grid(row=3, column=0, sticky='ne', padx=5, pady=5)
+        notes_text = tk.Text(dialog, width=35, height=4)
+        notes_text.grid(row=3, column=1, padx=5, pady=5)
+        
+        def save():
+            if not amount_entry.get():
+                messagebox.showerror("Error", "Amount is required")
+                return
+            
+            try:
+                amount = float(amount_entry.get().strip())
+                if amount <= 0:
+                    messagebox.showerror("Error", "Amount must be greater than 0")
+                    return
+                
+                payment_method = payment_var.get() or "Cash"
+                notes = notes_text.get('1.0', 'end').strip() or None
+                
+                service.add_deposit(ticket_id, amount, payment_method, notes)
+                
+                new_balance = service.calculate_balance_due(ticket_id)
+                messagebox.showinfo("Success", f"Payment recorded!\n\nNew Balance Due: ${new_balance:.2f}\n\nClose and reopen ticket details to see updated information.")
+                dialog.destroy()
+                # Don't destroy parent_dialog - let user continue viewing ticket
+                self.show_tickets()
+            except ValueError:
+                messagebox.showerror("Error", "Invalid amount")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to add payment: {e}")
+        
+        tk.Button(dialog, text="Record Payment", command=save, bg='#5cb85c', fg='white', font=('Segoe UI', 10)).grid(row=4, column=0, columnspan=2, pady=20)
     
     def show_parts(self):
         """Show parts inventory."""
@@ -1305,25 +1583,22 @@ Total: ${ticket.get('total', 0):.2f}
         stock_entry.insert(0, "0")
         stock_entry.grid(row=2, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Price:*").grid(row=3, column=0, sticky='e', padx=5, pady=5)
-        price_entry = tk.Entry(dialog, width=35)
-        price_entry.insert(0, "0.00")
-        price_entry.grid(row=3, column=1, padx=5, pady=5)
-        
-        tk.Label(dialog, text="Supplier:").grid(row=4, column=0, sticky='e', padx=5, pady=5)
+        tk.Label(dialog, text="Supplier:").grid(row=3, column=0, sticky='e', padx=5, pady=5)
         supplier_entry = tk.Entry(dialog, width=35)
-        supplier_entry.grid(row=4, column=1, padx=5, pady=5)
+        supplier_entry.grid(row=3, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Cost from Supplier:").grid(row=5, column=0, sticky='e', padx=5, pady=5)
+        tk.Label(dialog, text="Cost from Supplier:").grid(row=4, column=0, sticky='e', padx=5, pady=5)
         cost_entry = tk.Entry(dialog, width=35)
-        cost_entry.grid(row=5, column=1, padx=5, pady=5)
+        cost_entry.insert(0, "0.00")
+        cost_entry.grid(row=4, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Retail Price:").grid(row=6, column=0, sticky='e', padx=5, pady=5)
+        tk.Label(dialog, text="Retail Price (Customer):*").grid(row=5, column=0, sticky='e', padx=5, pady=5)
         retail_entry = tk.Entry(dialog, width=35)
-        retail_entry.grid(row=6, column=1, padx=5, pady=5)
+        retail_entry.insert(0, "0.00")
+        retail_entry.grid(row=5, column=1, padx=5, pady=5)
         
         taxable_var = tk.IntVar(value=1)
-        tk.Checkbutton(dialog, text="Taxable", variable=taxable_var).grid(row=7, column=1, sticky='w', padx=5, pady=5)
+        tk.Checkbutton(dialog, text="Taxable", variable=taxable_var).grid(row=6, column=1, sticky='w', padx=5, pady=5)
         
         def save():
             part_number = part_number_entry.get().strip() or None
@@ -1334,19 +1609,19 @@ Total: ${ticket.get('total', 0):.2f}
             
             try:
                 stock = int(stock_entry.get().strip())
-                price = float(price_entry.get().strip())
+                retail = float(retail_entry.get().strip()) if retail_entry.get().strip() else 0.0
                 supplier = supplier_entry.get().strip() or None
-                cost = float(cost_entry.get().strip()) if cost_entry.get().strip() else None
-                retail = float(retail_entry.get().strip()) if retail_entry.get().strip() else None
+                cost = float(cost_entry.get().strip()) if cost_entry.get().strip() else 0.0
                 
-                service.create_part(part_number, name, stock, price, supplier, cost, retail, taxable_var.get())
+                # Use retail price as the main price field
+                service.create_part(part_number, name, stock, retail, supplier, cost, retail, taxable_var.get())
                 messagebox.showinfo("Success", "Part added successfully")
                 dialog.destroy()
                 self.show_parts()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to add part: {e}")
         
-        tk.Button(dialog, text="Save", command=save, bg='#5cb85c', fg='white').grid(row=8, column=0, columnspan=2, pady=20)
+        tk.Button(dialog, text="Save", command=save, bg='#5cb85c', fg='white').grid(row=7, column=0, columnspan=2, pady=20)
     
     def edit_part_dialog(self, tree):
         """Show edit part dialog."""
@@ -1380,30 +1655,24 @@ Total: ${ticket.get('total', 0):.2f}
         stock_entry.insert(0, str(part['stock_quantity']))
         stock_entry.grid(row=2, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Price:*").grid(row=3, column=0, sticky='e', padx=5, pady=5)
-        price_entry = tk.Entry(dialog, width=35)
-        price_entry.insert(0, str(part['price']))
-        price_entry.grid(row=3, column=1, padx=5, pady=5)
-        
-        tk.Label(dialog, text="Supplier:").grid(row=4, column=0, sticky='e', padx=5, pady=5)
+        tk.Label(dialog, text="Supplier:").grid(row=3, column=0, sticky='e', padx=5, pady=5)
         supplier_entry = tk.Entry(dialog, width=35)
         supplier_entry.insert(0, part.get('supplier_name', ''))
-        supplier_entry.grid(row=4, column=1, padx=5, pady=5)
+        supplier_entry.grid(row=3, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Cost from Supplier:").grid(row=5, column=0, sticky='e', padx=5, pady=5)
+        tk.Label(dialog, text="Cost from Supplier:").grid(row=4, column=0, sticky='e', padx=5, pady=5)
         cost_entry = tk.Entry(dialog, width=35)
         if part.get('cost_from_supplier'):
             cost_entry.insert(0, str(part['cost_from_supplier']))
-        cost_entry.grid(row=5, column=1, padx=5, pady=5)
+        cost_entry.grid(row=4, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Retail Price:").grid(row=6, column=0, sticky='e', padx=5, pady=5)
+        tk.Label(dialog, text="Retail Price (Customer):*").grid(row=5, column=0, sticky='e', padx=5, pady=5)
         retail_entry = tk.Entry(dialog, width=35)
-        if part.get('retail_price'):
-            retail_entry.insert(0, str(part['retail_price']))
-        retail_entry.grid(row=6, column=1, padx=5, pady=5)
+        retail_entry.insert(0, str(part.get('retail_price') or part['price']))
+        retail_entry.grid(row=5, column=1, padx=5, pady=5)
         
         taxable_var = tk.IntVar(value=part.get('taxable', 1))
-        tk.Checkbutton(dialog, text="Taxable", variable=taxable_var).grid(row=7, column=1, sticky='w', padx=5, pady=5)
+        tk.Checkbutton(dialog, text="Taxable", variable=taxable_var).grid(row=6, column=1, sticky='w', padx=5, pady=5)
         
         def save():
             name = name_entry.get().strip()
@@ -1412,11 +1681,13 @@ Total: ${ticket.get('total', 0):.2f}
                 return
             
             try:
+                retail = float(retail_entry.get().strip()) if retail_entry.get().strip() else 0.0
                 updates = {
                     'part_number': part_number_entry.get().strip() or None,
                     'name': name,
                     'stock_quantity': int(stock_entry.get().strip()),
-                    'price': float(price_entry.get().strip()),
+                    'price': retail,  # Use retail price as main price
+                    'retail_price': retail,
                     'taxable': taxable_var.get()
                 }
                 
@@ -1424,8 +1695,6 @@ Total: ${ticket.get('total', 0):.2f}
                     updates['supplier_name'] = supplier_entry.get().strip()
                 if cost_entry.get().strip():
                     updates['cost_from_supplier'] = float(cost_entry.get().strip())
-                if retail_entry.get().strip():
-                    updates['retail_price'] = float(retail_entry.get().strip())
                 
                 service.update_part(part_id, **updates)
                 messagebox.showinfo("Success", "Part updated successfully")
@@ -1434,7 +1703,7 @@ Total: ${ticket.get('total', 0):.2f}
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to update part: {e}")
         
-        tk.Button(dialog, text="Save", command=save, bg='#5cb85c', fg='white').grid(row=8, column=0, columnspan=2, pady=20)
+        tk.Button(dialog, text="Save", command=save, bg='#5cb85c', fg='white').grid(row=7, column=0, columnspan=2, pady=20)
     
     def show_new_engines(self):
         """Show new engines inventory."""
@@ -1646,24 +1915,27 @@ Total: ${ticket.get('total', 0):.2f}
         info_text = tk.Text(dialog, wrap='word')
         info_text.pack(fill='both', expand=True, padx=10, pady=10)
         
+        purchase_price = engine.get('purchase_price') or 0
+        sale_price = engine.get('sale_price') or 0
+        
         details = f"""Engine ID: {engine['new_engine_id']}
 HP: {engine['hp']}
 Model: {engine['model']}
 Serial Number: {engine['serial_number']}
 Status: {engine['status']}
 
-Purchase Price: ${engine.get('purchase_price', 0):.2f}
-Sale Price: ${engine.get('sale_price', 0):.2f}
+Purchase Price: ${purchase_price:.2f}
+Sale Price: ${sale_price:.2f}
 
-Date Sold: {engine.get('date_sold', 'N/A')}
-Date Installed: {engine.get('date_installed', 'N/A')}
+Date Sold: {engine.get('date_sold') or 'N/A'}
+Date Installed: {engine.get('date_installed') or 'N/A'}
 Paid in Full: {'Yes' if engine.get('paid_in_full') else 'No'}
 
 Registered with Tohatsu: {'Yes' if engine.get('registered_with_tohatsu') else 'No'}
-Registration Date: {engine.get('registration_date', 'N/A')}
+Registration Date: {engine.get('registration_date') or 'N/A'}
 
 Notes:
-{engine.get('notes', 'No notes')}
+{engine.get('notes') or 'No notes'}
 """
         
         if engine.get('customer_id'):
@@ -1791,6 +2063,15 @@ Notes:
             command=self.add_estimate_dialog
         ).pack(side='right')
         
+        tk.Button(
+            header,
+            text="🔄 Recalculate All",
+            font=('Segoe UI', 10),
+            bg='#f0ad4e',
+            fg='white',
+            command=lambda: self.recalculate_all_estimates(tree)
+        ).pack(side='right', padx=(0, 5))
+        
         # Search
         search_frame = tk.Frame(self.content_frame, bg='white')
         search_frame.pack(fill='x', pady=(0, 10))
@@ -1848,6 +2129,18 @@ Notes:
                 menu.post(e.x_root, e.y_root)
         tree.bind('<Button-3>', show_menu)
     
+    def recalculate_all_estimates(self, tree):
+        """Recalculate totals for all estimates."""
+        estimates = service.list_estimates()
+        count = 0
+        for est in estimates:
+            service.calculate_estimate_totals(est['estimate_id'])
+            count += 1
+        
+        # Reload the tree
+        self.load_estimates(tree)
+        messagebox.showinfo("Success", f"Recalculated totals for {count} estimate(s)")
+    
     def load_estimates(self, tree):
         """Load estimates into tree."""
         tree.delete(*tree.get_children())
@@ -1895,7 +2188,7 @@ Notes:
         """Create new estimate."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Create New Estimate")
-        dialog.geometry("400x300")
+        dialog.geometry("450x550")
         
         tk.Label(dialog, text="Customer:*").grid(row=0, column=0, sticky='e', padx=5, pady=5)
         customers = service.list_customers()
@@ -1904,13 +2197,54 @@ Notes:
         customer_combo = ttk.Combobox(dialog, textvariable=customer_var, values=customer_choices, width=35)
         customer_combo.grid(row=0, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Insurance Info:").grid(row=1, column=0, sticky='e', padx=5, pady=5)
-        insurance_entry = tk.Entry(dialog, width=35)
-        insurance_entry.grid(row=1, column=1, padx=5, pady=5)
+        tk.Label(dialog, text="Boat:").grid(row=1, column=0, sticky='e', padx=5, pady=5)
+        boat_var = tk.StringVar()
+        boat_combo = ttk.Combobox(dialog, textvariable=boat_var, values=[], width=35, state='disabled')
+        boat_combo.grid(row=1, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Notes:").grid(row=2, column=0, sticky='ne', padx=5, pady=5)
-        notes_text = tk.Text(dialog, width=35, height=6)
-        notes_text.grid(row=2, column=1, padx=5, pady=5)
+        tk.Label(dialog, text="Engine:").grid(row=2, column=0, sticky='e', padx=5, pady=5)
+        engine_var = tk.StringVar()
+        engine_combo = ttk.Combobox(dialog, textvariable=engine_var, values=[], width=35, state='disabled')
+        engine_combo.grid(row=2, column=1, padx=5, pady=5)
+        
+        def on_customer_change(event):
+            if not customer_var.get():
+                self.populate_boat_dropdown(None, boat_combo, boat_var)
+                self.populate_engine_dropdown(None, engine_combo, engine_var)
+                return
+            
+            try:
+                customer_id = int(customer_var.get().split(' - ')[0])
+                self.populate_boat_dropdown(customer_id, boat_combo, boat_var)
+                self.populate_engine_dropdown(None, engine_combo, engine_var)
+            except Exception:
+                pass
+        
+        def on_boat_change(event):
+            if not boat_var.get():
+                self.populate_engine_dropdown(None, engine_combo, engine_var)
+                return
+            
+            try:
+                boat_id = int(boat_var.get().split(' - ')[0])
+                self.populate_engine_dropdown(boat_id, engine_combo, engine_var)
+            except Exception:
+                pass
+        
+        customer_combo.bind('<<ComboboxSelected>>', on_customer_change)
+        boat_combo.bind('<<ComboboxSelected>>', on_boat_change)
+        
+        tk.Label(dialog, text="Insurance Company:").grid(row=3, column=0, sticky='e', padx=5, pady=5)
+        insurance_entry = tk.Entry(dialog, width=35)
+        insurance_entry.grid(row=3, column=1, padx=5, pady=5)
+        
+        tk.Label(dialog, text="Claim Number:").grid(row=4, column=0, sticky='e', padx=5, pady=5)
+        claim_entry = tk.Entry(dialog, width=35)
+        claim_entry.grid(row=4, column=1, padx=5, pady=5)
+        
+        tk.Label(dialog, text="Notes:").grid(row=5, column=0, sticky='ne', padx=5, pady=5)
+        notes_text = tk.Text(dialog, width=35, height=8)
+        notes_text.grid(row=5, column=1, padx=5, pady=5)
         
         def save():
             if not customer_var.get():
@@ -1919,25 +2253,38 @@ Notes:
             
             try:
                 customer_id = int(customer_var.get().split(' - ')[0])
-                insurance_info = insurance_entry.get().strip() or None
+                
+                boat_id = None
+                if boat_var.get():
+                    boat_id = int(boat_var.get().split(' - ')[0])
+                
+                engine_id = None
+                if engine_var.get():
+                    engine_id = int(engine_var.get().split(' - ')[0])
+                
+                insurance_company = insurance_entry.get().strip() or None
+                claim_number = claim_entry.get().strip() or None
                 notes = notes_text.get('1.0', 'end').strip() or None
                 
-                estimate_id = service.create_estimate(customer_id, None, None, insurance_info, None, notes)
+                estimate_id = service.create_estimate(customer_id, boat_id, engine_id, insurance_company, claim_number, notes)
                 messagebox.showinfo("Success", f"Estimate #{estimate_id} created. Add line items to complete.")
                 dialog.destroy()
                 self.show_estimates()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to create estimate: {e}")
         
-        tk.Button(dialog, text="Create Estimate", command=save, bg='#5cb85c', fg='white').grid(row=3, column=0, columnspan=2, pady=20)
+        tk.Button(dialog, text="Create Estimate", command=save, bg='#5cb85c', fg='white').grid(row=6, column=0, columnspan=2, pady=20)
     
     def view_estimate_dialog(self, tree):
         """View estimate details."""
-        selection = tree.selection()
-        if not selection:
+        estimate_id = self.get_selected_id(tree, "estimate")
+        if not estimate_id:
             return
         
-        estimate_id = tree.item(selection[0])['values'][0]
+        
+        # Recalculate totals to ensure they're current
+        service.calculate_estimate_totals(estimate_id)
+        
         details = service.get_estimate_details(estimate_id)
         if not details:
             messagebox.showerror("Error", "Estimate not found")
@@ -2016,11 +2363,10 @@ Notes:
     
     def add_estimate_line_item_dialog(self, tree):
         """Add line item to selected estimate."""
-        selection = tree.selection()
-        if not selection:
+        estimate_id = self.get_selected_id(tree, "estimate")
+        if not estimate_id:
             return
         
-        estimate_id = tree.item(selection[0])['values'][0]
         self.add_estimate_line_item_dialog_with_id(estimate_id)
     
     def add_estimate_line_item_dialog_with_id(self, estimate_id):
@@ -2057,6 +2403,8 @@ Notes:
                 
                 # Use 'part' as default item_type (could make this selectable)
                 service.add_estimate_line_item(estimate_id, 'part', description, quantity, unit_price)
+                # Recalculate totals
+                service.calculate_estimate_totals(estimate_id)
                 messagebox.showinfo("Success", "Line item added")
                 dialog.destroy()
                 self.show_estimates()
@@ -2582,20 +2930,7 @@ Notes:
             
             customer = service.get_customer(details['customer_id'])
             # Get boat info from database if needed
-            boat = None
-            if details.get('boat_id'):
-                try:
-                    import sqlite3
-                    conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
-                    conn.row_factory = sqlite3.Row
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM Boats WHERE boat_id = ?", (details['boat_id'],))
-                    row = cur.fetchone()
-                    if row:
-                        boat = dict(row)
-                    conn.close()
-                except:
-                    boat = None
+            boat = self.fetch_boat_by_id(details.get('boat_id'))
             
             # Ask user where to save
             filename = filedialog.asksaveasfilename(
@@ -2617,6 +2952,7 @@ Notes:
                         'amount': d.get('amount', 0.0)
                     } for d in deposits
                 ]
+                # Try to get new engine if engine_id exists
                 engine = None
                 if details.get('engine_id'):
                     try:
@@ -2642,6 +2978,10 @@ Notes:
             
             customer = service.get_customer(details['customer_id'])
             
+            # Get boat and engine info if available
+            boat = self.fetch_boat_by_id(details.get('boat_id'))
+            engine = self.fetch_engine_by_id(details.get('engine_id'))
+            
             # Ask user where to save
             filename = filedialog.asksaveasfilename(
                 defaultextension=".pdf",
@@ -2650,7 +2990,7 @@ Notes:
             )
             
             if filename:
-                pdf_generator.generate_estimate_pdf(details, customer, filename)
+                pdf_generator.generate_estimate_pdf(details, customer, filename, boat=boat, engine=engine)
                 messagebox.showinfo("Success", f"Estimate PDF saved to:\n{filename}")
                 
                 # Ask if they want to open it
@@ -2877,6 +3217,158 @@ Notes:
                 messagebox.showerror("Error", f"Failed to save rates: {e}")
 
         tk.Button(rates_frame, text="Save Rates", command=save_rates, bg='#5cb85c', fg='white').pack(anchor='w', padx=10, pady=10)
+
+        # Financial Reports tab
+        reports_frame = tk.Frame(notebook)
+        notebook.add(reports_frame, text='Financial Reports')
+
+        # Create scrollable canvas for reports
+        canvas = tk.Canvas(reports_frame, bg='white')
+        scrollbar_reports = ttk.Scrollbar(reports_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg='white')
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar_reports.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar_reports.pack(side="right", fill="y")
+
+        tk.Label(scrollable_frame, text="Financial Summary", font=('Segoe UI', 16, 'bold'), bg='white').pack(anchor='w', padx=10, pady=(10, 5))
+
+        # Get financial data
+        import sqlite3
+        from datetime import datetime, timedelta
+        conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
+        cur = conn.cursor()
+
+        # Monthly tax collected
+        today = datetime.now()
+        first_of_month = today.replace(day=1).strftime('%Y-%m-%d')
+        cur.execute("""
+            SELECT COALESCE(SUM(tax_amount), 0) as total_tax
+            FROM Tickets
+            WHERE date_opened >= ? AND status = 'Closed'
+        """, (first_of_month,))
+        monthly_tax = cur.fetchone()[0]
+
+        # Tax section
+        tax_frame = tk.LabelFrame(scrollable_frame, text="Tax Collection (Current Month)", font=('Segoe UI', 11, 'bold'), bg='white', padx=10, pady=10)
+        tax_frame.pack(fill='x', padx=10, pady=10)
+        tk.Label(tax_frame, text=f"Total Tax Collected: ${monthly_tax:.2f}", font=('Segoe UI', 12), bg='white', fg='#2d6a9f').pack(anchor='w')
+
+        # Mechanic earnings section
+        mech_frame = tk.LabelFrame(scrollable_frame, text="Mechanic Earnings", font=('Segoe UI', 11, 'bold'), bg='white', padx=10, pady=10)
+        mech_frame.pack(fill='x', padx=10, pady=10)
+
+        # Get all mechanics
+        cur.execute("SELECT mechanic_id, name, hourly_rate FROM Mechanics ORDER BY name")
+        mechanics_list = cur.fetchall()
+
+        # Week range
+        week_start = (today - timedelta(days=today.weekday())).strftime('%Y-%m-%d')
+        
+        for mech in mechanics_list:
+            mech_id, mech_name, mech_rate = mech
+            
+            # This week earnings
+            cur.execute("""
+                SELECT COALESCE(SUM(ta.hours_worked * ta.labor_rate), 0) as week_total
+                FROM TicketAssignments ta
+                JOIN Tickets t ON ta.ticket_id = t.ticket_id
+                WHERE ta.mechanic_id = ? AND t.date_opened >= ?
+            """, (mech_id, week_start))
+            week_earnings = cur.fetchone()[0]
+
+            # Total historical earnings
+            cur.execute("""
+                SELECT COALESCE(SUM(ta.hours_worked * ta.labor_rate), 0) as total_earnings
+                FROM TicketAssignments ta
+                WHERE ta.mechanic_id = ?
+            """, (mech_id,))
+            total_earnings = cur.fetchone()[0]
+
+            # Mechanic pay (using their hourly rate)
+            cur.execute("""
+                SELECT COALESCE(SUM(ta.hours_worked * ?), 0) as week_pay
+                FROM TicketAssignments ta
+                JOIN Tickets t ON ta.ticket_id = t.ticket_id
+                WHERE ta.mechanic_id = ? AND t.date_opened >= ?
+            """, (mech_rate, mech_id, week_start))
+            week_pay = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COALESCE(SUM(ta.hours_worked * ?), 0) as total_pay
+                FROM TicketAssignments ta
+                WHERE ta.mechanic_id = ?
+            """, (mech_rate, mech_id))
+            total_pay = cur.fetchone()[0]
+
+            mech_detail = tk.Frame(mech_frame, bg='white')
+            mech_detail.pack(fill='x', pady=5)
+            
+            tk.Label(mech_detail, text=f"• {mech_name}", font=('Segoe UI', 10, 'bold'), bg='white').pack(anchor='w')
+            tk.Label(mech_detail, text=f"  This Week - Billed: ${week_earnings:.2f} | Paid: ${week_pay:.2f} | Shop Profit: ${week_earnings - week_pay:.2f}", 
+                    font=('Segoe UI', 9), bg='white', fg='#555').pack(anchor='w', padx=15)
+            tk.Label(mech_detail, text=f"  All Time - Billed: ${total_earnings:.2f} | Paid: ${total_pay:.2f} | Shop Profit: ${total_earnings - total_pay:.2f}", 
+                    font=('Segoe UI', 9), bg='white', fg='#555').pack(anchor='w', padx=15)
+
+        # Parts profit section
+        parts_frame = tk.LabelFrame(scrollable_frame, text="Parts Profit", font=('Segoe UI', 11, 'bold'), bg='white', padx=10, pady=10)
+        parts_frame.pack(fill='x', padx=10, pady=10)
+
+        # Calculate parts profit
+        cur.execute("""
+            SELECT 
+                COALESCE(SUM(tp.quantity_used * p.price), 0) as parts_revenue,
+                COALESCE(SUM(tp.quantity_used * COALESCE(p.cost_from_supplier, 0)), 0) as parts_cost
+            FROM TicketParts tp
+            JOIN Parts p ON tp.part_id = p.part_id
+            JOIN Tickets t ON tp.ticket_id = t.ticket_id
+            WHERE t.status = 'Closed'
+        """)
+        parts_revenue, parts_cost = cur.fetchone()
+        parts_profit = parts_revenue - parts_cost
+
+        tk.Label(parts_frame, text=f"Total Parts Revenue: ${parts_revenue:.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(parts_frame, text=f"Total Parts Cost: ${parts_cost:.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(parts_frame, text=f"Total Parts Profit: ${parts_profit:.2f}", font=('Segoe UI', 10, 'bold'), bg='white', fg='#5cb85c' if parts_profit > 0 else '#d9534f').pack(anchor='w')
+
+        # Overall shop summary
+        summary_frame = tk.LabelFrame(scrollable_frame, text="Shop Summary (All Time)", font=('Segoe UI', 11, 'bold'), bg='white', padx=10, pady=10)
+        summary_frame.pack(fill='x', padx=10, pady=10)
+
+        # Total labor billed vs mechanic pay
+        cur.execute("""
+            SELECT COALESCE(SUM(ta.hours_worked * ta.labor_rate), 0) as total_billed
+            FROM TicketAssignments ta
+        """)
+        total_labor_billed = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COALESCE(SUM(ta.hours_worked * m.hourly_rate), 0) as total_paid
+            FROM TicketAssignments ta
+            JOIN Mechanics m ON ta.mechanic_id = m.mechanic_id
+        """)
+        total_labor_paid = cur.fetchone()[0]
+
+        labor_profit = total_labor_billed - total_labor_paid
+
+        tk.Label(summary_frame, text=f"Labor Revenue: ${total_labor_billed:.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(summary_frame, text=f"Labor Cost (Mechanic Pay): ${total_labor_paid:.2f}", font=('Segoe UI', 10), bg='white').pack(anchor='w')
+        tk.Label(summary_frame, text=f"Labor Profit: ${labor_profit:.2f}", font=('Segoe UI', 10, 'bold'), bg='white', fg='#5cb85c' if labor_profit > 0 else '#d9534f').pack(anchor='w')
+        
+        tk.Label(summary_frame, text="", bg='white').pack()  # Spacer
+        
+        tk.Label(summary_frame, text=f"Parts Profit: ${parts_profit:.2f}", font=('Segoe UI', 10, 'bold'), bg='white').pack(anchor='w')
+        tk.Label(summary_frame, text=f"Total Shop Profit (Labor + Parts): ${labor_profit + parts_profit:.2f}", 
+                font=('Segoe UI', 12, 'bold'), bg='white', fg='#2d6a9f').pack(anchor='w', pady=(5, 0))
+
+        conn.close()
     
     def add_mechanic_dialog(self):
         """Add new mechanic."""

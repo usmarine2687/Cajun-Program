@@ -247,7 +247,7 @@ def auto_backup_on_startup():
     Returns (success, message)
     """
     success, backup_path, error = create_backup()
-    if success:
+    if success and backup_path:
         return True, f"Auto-backup created: {Path(backup_path).name}"
     else:
         return False, f"Auto-backup failed: {error}"
@@ -281,9 +281,9 @@ def _dict_factory(cursor, row):
 # CUSTOMER OPERATIONS
 # ============================================================================
 
-def create_customer(name: str, phone: str = None, email: str = None, 
-                   address: str = None, tax_exempt: int = 0,
-                   tax_exempt_certificate: str = None, 
+def create_customer(name: str, phone: Optional[str] = None, email: Optional[str] = None, 
+                   address: Optional[str] = None, tax_exempt: int = 0,
+                   tax_exempt_certificate: Optional[str] = None, 
                    out_of_state: int = 0) -> int:
     """Create a new customer. Returns customer_id."""
     conn = _get_connection()
@@ -296,7 +296,7 @@ def create_customer(name: str, phone: str = None, email: str = None,
     conn.commit()
     customer_id = cur.lastrowid
     conn.close()
-    return customer_id
+    return int(customer_id) if customer_id else 0
 
 
 def get_customer(customer_id: int) -> Optional[Dict]:
@@ -345,6 +345,158 @@ def list_customers() -> List[Dict]:
     return results
 
 
+def get_customer_boats(customer_id: int) -> List[Dict]:
+    """Get all boats for a customer."""
+    conn = _get_connection()
+    conn.row_factory = _dict_factory
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM Boats WHERE customer_id = ? ORDER BY year DESC", (customer_id,))
+    result = cur.fetchall()
+    conn.close()
+    return result
+
+
+def get_boat_engines(boat_id: int) -> List[Dict]:
+    """Get all engines for a boat."""
+    conn = _get_connection()
+    conn.row_factory = _dict_factory
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM Engines WHERE boat_id = ?", (boat_id,))
+    result = cur.fetchall()
+    conn.close()
+    return result
+
+
+def import_customers_from_excel(file_path: str) -> Tuple[int, int, List[str]]:
+    """Import customers from Excel file. Returns (created_count, updated_count, errors).
+    
+    Expected Excel columns (case-insensitive, any order):
+    - Name (required)
+    - Phone (optional)
+    - Email (optional)
+    - Address (optional)
+    - Tax Exempt (optional, 1/0 or Yes/No)
+    - Tax Exempt Certificate (optional)
+    - Out of State (optional, 1/0 or Yes/No)
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        return (0, 0, ["openpyxl not installed. Install with: pip install openpyxl"])
+    
+    errors = []
+    created_count = 0
+    updated_count = 0
+    
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True)
+        ws = wb.active
+        if ws is None:
+            return 0, 0, ["No active worksheet found in Excel file"]
+        
+        # Get headers from first row
+        headers = []
+        for cell in ws[1]:  # type: ignore
+            if cell.value:
+                headers.append(str(cell.value).strip().lower())
+            else:
+                headers.append('')
+        
+        # Find column indices
+        col_map = {}
+        for idx, header in enumerate(headers):
+            if 'name' in header:
+                col_map['name'] = idx
+            elif 'phone' in header:
+                col_map['phone'] = idx
+            elif 'email' in header:
+                col_map['email'] = idx
+            elif 'address' in header:
+                col_map['address'] = idx
+            elif 'tax' in header and 'exempt' in header and 'cert' not in header:
+                col_map['tax_exempt'] = idx
+            elif 'cert' in header:
+                col_map['tax_exempt_certificate'] = idx
+            elif 'out' in header and 'state' in header:
+                col_map['out_of_state'] = idx
+        
+        if 'name' not in col_map:
+            return (0, 0, ["Excel file must have a 'Name' column"])
+        
+        # Process rows (skip header)
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):  # type: ignore
+            try:
+                # Get name (required)
+                name = row[col_map['name']] if len(row) > col_map['name'] else None
+                if not name or str(name).strip() == '':
+                    continue  # Skip empty rows
+                
+                name = str(name).strip()
+                
+                # Get optional fields
+                phone = str(row[col_map['phone']]).strip() if 'phone' in col_map and len(row) > col_map['phone'] and row[col_map['phone']] else None
+                email = str(row[col_map['email']]).strip() if 'email' in col_map and len(row) > col_map['email'] and row[col_map['email']] else None
+                address = str(row[col_map['address']]).strip() if 'address' in col_map and len(row) > col_map['address'] and row[col_map['address']] else None
+                
+                # Parse boolean fields
+                tax_exempt = 0
+                if 'tax_exempt' in col_map and len(row) > col_map['tax_exempt'] and row[col_map['tax_exempt']]:
+                    val = str(row[col_map['tax_exempt']]).strip().lower()
+                    tax_exempt = 1 if val in ('1', 'yes', 'true', 'y') else 0
+                
+                tax_exempt_certificate = str(row[col_map['tax_exempt_certificate']]).strip() if 'tax_exempt_certificate' in col_map and len(row) > col_map['tax_exempt_certificate'] and row[col_map['tax_exempt_certificate']] else None
+                
+                out_of_state = 0
+                if 'out_of_state' in col_map and len(row) > col_map['out_of_state'] and row[col_map['out_of_state']]:
+                    val = str(row[col_map['out_of_state']]).strip().lower()
+                    out_of_state = 1 if val in ('1', 'yes', 'true', 'y') else 0
+                
+                # Check if customer exists by name (simple match)
+                conn = _get_connection()
+                conn.row_factory = _dict_factory
+                cur = conn.cursor()
+                cur.execute("SELECT customer_id FROM Customers WHERE LOWER(name) = LOWER(?)", (name,))
+                existing = cur.fetchone()
+                
+                if existing:
+                    # Update existing customer
+                    update_customer(
+                        existing['customer_id'],
+                        name=name,
+                        phone=phone,
+                        email=email,
+                        address=address,
+                        tax_exempt=tax_exempt,
+                        tax_exempt_certificate=tax_exempt_certificate,
+                        out_of_state=out_of_state
+                    )
+                    updated_count += 1
+                else:
+                    # Create new customer
+                    create_customer(
+                        name,
+                        phone,
+                        email,
+                        address,
+                        tax_exempt,
+                        tax_exempt_certificate,
+                        out_of_state
+                    )
+                    created_count += 1
+                
+                conn.close()
+                
+            except Exception as e:
+                errors.append(f"Row {row_idx}: {str(e)}")
+        
+        wb.close()
+        
+    except Exception as e:
+        errors.append(f"Failed to read Excel file: {str(e)}")
+    
+    return (created_count, updated_count, errors)
+
+
 # ============================================================================
 # PARTS OPERATIONS
 # ============================================================================
@@ -364,7 +516,7 @@ def create_part(part_number: Optional[str] = None, name: str = "", stock_quantit
     conn.commit()
     part_id = cur.lastrowid
     conn.close()
-    return part_id
+    return int(part_id) if part_id else 0
 
 
 def get_part(part_id: int) -> Optional[Dict]:
@@ -418,7 +570,7 @@ def list_parts() -> List[Dict]:
 # ============================================================================
 
 def create_new_engine(hp: int, model: str, serial_number: str,
-                     purchase_price: float = None, notes: str = None) -> int:
+                     purchase_price: Optional[float] = None, notes: Optional[str] = None) -> int:
     """Create a new engine in inventory. Returns new_engine_id."""
     conn = _get_connection()
     cur = conn.cursor()
@@ -429,7 +581,7 @@ def create_new_engine(hp: int, model: str, serial_number: str,
     conn.commit()
     engine_id = cur.lastrowid
     conn.close()
-    return engine_id
+    return int(engine_id) if engine_id else 0
 
 
 def get_new_engine(new_engine_id: int) -> Optional[Dict]:
@@ -443,9 +595,9 @@ def get_new_engine(new_engine_id: int) -> Optional[Dict]:
     return result
 
 
-def sell_new_engine(new_engine_id: int, customer_id: int, boat_id: int = None,
-                   sale_price: float = None, date_sold: str = None,
-                   date_installed: str = None, paid_in_full: int = 0) -> bool:
+def sell_new_engine(new_engine_id: int, customer_id: int, boat_id: Optional[int] = None,
+                   sale_price: Optional[float] = None, date_sold: Optional[str] = None,
+                   date_installed: Optional[str] = None, paid_in_full: int = 0) -> bool:
     """Mark engine as sold to customer. Returns success boolean."""
     if date_sold is None:
         date_sold = datetime.now().strftime('%Y-%m-%d')
@@ -491,7 +643,7 @@ def update_new_engine(new_engine_id: int, **fields) -> bool:
     return success
 
 
-def list_new_engines(status: str = None) -> List[Dict]:
+def list_new_engines(status: Optional[str] = None) -> List[Dict]:
     """List new engines, optionally filtered by status."""
     conn = _get_connection()
     conn.row_factory = _dict_factory
@@ -537,7 +689,7 @@ def get_engines_needing_registration() -> List[Dict]:
 # ============================================================================
 
 def calculate_tax(customer_id: int, line_items: List[Dict], 
-                 payment_method: str = None, 
+                 payment_method: Optional[str] = None, 
                  new_engine_sale_price: float = 0.0) -> Tuple[float, float, float]:
     """
     Calculate subtotal, tax, and total for a transaction.
@@ -595,9 +747,9 @@ def calculate_tax(customer_id: int, line_items: List[Dict],
 # ESTIMATE OPERATIONS
 # ============================================================================
 
-def create_estimate(customer_id: int, boat_id: int = None, engine_id: int = None,
-                   insurance_company: str = None, claim_number: str = None,
-                   notes: str = None) -> int:
+def create_estimate(customer_id: int, boat_id: Optional[int] = None, engine_id: Optional[int] = None,
+                   insurance_company: Optional[str] = None, claim_number: Optional[str] = None,
+                   notes: Optional[str] = None) -> int:
     """Create a new estimate. Returns estimate_id."""
     date_created = datetime.now().strftime('%Y-%m-%d')
     
@@ -612,7 +764,7 @@ def create_estimate(customer_id: int, boat_id: int = None, engine_id: int = None
     conn.commit()
     estimate_id = cur.lastrowid
     conn.close()
-    return estimate_id
+    return int(estimate_id) if estimate_id else 0
 
 
 def add_estimate_line_item(estimate_id: int, item_type: str, description: str,
@@ -633,7 +785,7 @@ def add_estimate_line_item(estimate_id: int, item_type: str, description: str,
     conn.commit()
     line_item_id = cur.lastrowid
     conn.close()
-    return line_item_id
+    return int(line_item_id) if line_item_id else 0
 
 
 def calculate_estimate_totals(estimate_id: int) -> Tuple[float, float, float]:
@@ -690,7 +842,7 @@ def get_estimate_details(estimate_id: int) -> Optional[Dict]:
     # Get estimate
     cur.execute("""
         SELECT e.*, c.name as customer_name, c.phone as customer_phone,
-               b.make as boat_make, b.model as boat_model
+               b.make as boat_make, b.model as boat_model, e.date_created as estimate_date
         FROM Estimates e
         LEFT JOIN Customers c ON e.customer_id = c.customer_id
         LEFT JOIN Boats b ON e.boat_id = b.boat_id
@@ -720,7 +872,7 @@ def list_estimates() -> List[Dict]:
     conn.row_factory = _dict_factory
     cur = conn.cursor()
     cur.execute("""
-        SELECT e.*, c.name as customer_name
+        SELECT e.*, c.name as customer_name, e.date_created as estimate_date
         FROM Estimates e
         LEFT JOIN Customers c ON e.customer_id = c.customer_id
         ORDER BY e.date_created DESC
@@ -734,8 +886,8 @@ def list_estimates() -> List[Dict]:
 # TICKET OPERATIONS
 # ============================================================================
 
-def create_ticket(customer_id: int, boat_id: int, engine_id: int = None,
-                 description: str = None) -> int:
+def create_ticket(customer_id: int, boat_id: int, engine_id: Optional[int] = None,
+                 description: Optional[str] = None) -> int:
     """Create a new ticket. Returns ticket_id."""
     date_opened = datetime.now().strftime('%Y-%m-%d')
     
@@ -749,7 +901,7 @@ def create_ticket(customer_id: int, boat_id: int, engine_id: int = None,
     conn.commit()
     ticket_id = cur.lastrowid
     conn.close()
-    return ticket_id
+    return int(ticket_id) if ticket_id else 0
 
 
 def update_ticket_status(ticket_id: int, new_status: str) -> bool:
@@ -783,7 +935,7 @@ def update_ticket_status(ticket_id: int, new_status: str) -> bool:
     return success
 
 
-def add_ticket_part(ticket_id: int, part_id: int, quantity: int, price_override: float = None) -> int:
+def add_ticket_part(ticket_id: int, part_id: int, quantity: int, price_override: Optional[float] = None) -> int:
     """Add part to ticket with optional price override. Returns ticket_part_id."""
     conn = _get_connection()
     cur = conn.cursor()
@@ -804,11 +956,22 @@ def add_ticket_part(ticket_id: int, part_id: int, quantity: int, price_override:
     conn.commit()
     ticket_part_id = cur.lastrowid
     conn.close()
-    return ticket_part_id
+    return int(ticket_part_id) if ticket_part_id else 0
+
+
+def delete_ticket_part(ticket_part_id: int) -> bool:
+    """Delete a part from a ticket. Returns success boolean."""
+    conn = _get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM TicketParts WHERE ticket_part_id = ?", (ticket_part_id,))
+    conn.commit()
+    success = cur.rowcount > 0
+    conn.close()
+    return success
 
 
 def add_ticket_labor(ticket_id: int, mechanic_id: int, hours: float,
-                    work_description: str = None, labor_rate: float = None) -> int:
+                    work_description: Optional[str] = None, labor_rate: Optional[float] = None) -> int:
     """Add labor to ticket. Returns assignment_id."""
     conn = _get_connection()
     cur = conn.cursor()
@@ -871,11 +1034,22 @@ def add_ticket_labor(ticket_id: int, mechanic_id: int, hours: float,
     conn.commit()
     assignment_id = cur.lastrowid
     conn.close()
-    return assignment_id
+    return int(assignment_id) if assignment_id else 0
 
 
-def calculate_ticket_totals(ticket_id: int, payment_method: str = None,
-                           new_engine_id: int = None) -> Tuple[float, float, float]:
+def delete_ticket_labor(assignment_id: int) -> bool:
+    """Delete a labor entry from a ticket. Returns success boolean."""
+    conn = _get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM TicketAssignments WHERE assignment_id = ?", (assignment_id,))
+    conn.commit()
+    success = cur.rowcount > 0
+    conn.close()
+    return success
+
+
+def calculate_ticket_totals(ticket_id: int, payment_method: Optional[str] = None,
+                           new_engine_id: Optional[int] = None) -> Tuple[float, float, float]:
     """Calculate and update ticket totals. Returns (subtotal, tax, total)."""
     conn = _get_connection()
     conn.row_factory = _dict_factory
@@ -960,10 +1134,13 @@ def get_ticket_details(ticket_id: int) -> Optional[Dict]:
     # Get ticket
     cur.execute("""
         SELECT t.*, c.name as customer_name, c.phone as customer_phone,
-               b.make as boat_make, b.model as boat_model
+               b.make as boat_make, b.model as boat_model,
+               e.make as engine_make, e.model as engine_model, e.hp as engine_hp,
+               e.engine_type as engine_type, e.year as engine_year, e.outdrive as engine_outdrive
         FROM Tickets t
         LEFT JOIN Customers c ON t.customer_id = c.customer_id
         LEFT JOIN Boats b ON t.boat_id = b.boat_id
+        LEFT JOIN Engines e ON t.engine_id = e.engine_id
         WHERE t.ticket_id = ?
     """, (ticket_id,))
     ticket = cur.fetchone()

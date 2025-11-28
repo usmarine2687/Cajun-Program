@@ -1,18 +1,263 @@
 """
 Cajun Marine Service Layer
 Centralized business logic and CRUD operations for all entities.
+Includes validation, backup utilities, and database helpers.
 """
 import sqlite3
+import os
+import shutil
+import re
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple, Any
-from db.db_utils import get_db_path
+import argparse
+
+
+# ============================================================================
+# DATABASE PATH & UTILITIES
+# ============================================================================
+
+def get_db_path():
+    """Return the absolute path to the database file."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(os.path.dirname(base_dir), "Cajun_Data.db")
+
+def _format_phone(raw_phone: str) -> str:
+    """Format phone as (###)###-#### if it has 10 digits; otherwise return original stripped."""
+    if not raw_phone:
+        return ''
+    digits = ''.join(ch for ch in str(raw_phone) if ch.isdigit())
+    if len(digits) == 10:
+        return f"({digits[0:3]}){digits[3:6]}-{digits[6:10]}"
+    return str(raw_phone).strip()
+
+def ensure_database_exists():
+    """Ensure database exists by creating from schema if needed."""
+    db_path = get_db_path()
+    if not os.path.exists(db_path):
+        schema_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'schema.sql')
+        if os.path.exists(schema_path):
+            with open(schema_path, 'r') as f:
+                schema_sql = f.read()
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.executescript(schema_sql)
+            conn.commit()
+            conn.close()
+
+
+# ============================================================================
+# VALIDATION FUNCTIONS
+# ============================================================================
+
+def validate_phone(phone):
+    """
+    Validate phone number format.
+    Returns (is_valid, formatted_phone, error_message)
+    """
+    if not phone or phone.strip() == '':
+        return True, '', None  # Empty is OK
+    
+    # Remove all non-digit characters
+    digits = re.sub(r'\D', '', phone)
+    
+    # Check if we have exactly 10 digits
+    if len(digits) != 10:
+        return False, phone, "Phone number must be 10 digits (e.g., 555-123-4567)"
+    
+    # Format as (555)123-4567
+    formatted = f"({digits[0:3]}){digits[3:6]}-{digits[6:10]}"
+    return True, formatted, None
+
+
+def validate_email(email):
+    """
+    Validate email format.
+    Returns (is_valid, error_message)
+    """
+    if not email or email.strip() == '':
+        return True, None  # Empty is OK
+    
+    # Basic email regex pattern
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    
+    if re.match(pattern, email.strip()):
+        return True, None
+    else:
+        return False, "Invalid email format (e.g., user@example.com)"
+
+
+def validate_serial_number(serial):
+    """
+    Validate serial number (alphanumeric, no special chars except dash/underscore).
+    Returns (is_valid, error_message)
+    """
+    if not serial or serial.strip() == '':
+        return False, "Serial number is required"
+    
+    # Allow alphanumeric, dash, and underscore only
+    pattern = r'^[a-zA-Z0-9_-]+$'
+    
+    if re.match(pattern, serial.strip()):
+        return True, None
+    else:
+        return False, "Serial number can only contain letters, numbers, dashes, and underscores"
+
+
+def validate_required_field(value, field_name):
+    """
+    Validate that a required field is not empty.
+    Returns (is_valid, error_message)
+    """
+    if not value or str(value).strip() == '':
+        return False, f"{field_name} is required"
+    return True, None
+
+
+def validate_positive_number(value, field_name, allow_zero=False):
+    """
+    Validate that a number is positive (and optionally allow zero).
+    Returns (is_valid, error_message)
+    """
+    try:
+        num = float(value)
+        if allow_zero:
+            if num < 0:
+                return False, f"{field_name} cannot be negative"
+        else:
+            if num <= 0:
+                return False, f"{field_name} must be greater than zero"
+        return True, None
+    except (ValueError, TypeError):
+        return False, f"{field_name} must be a valid number"
+
+
+def validate_integer(value, field_name, min_value=None, max_value=None):
+    """
+    Validate that a value is an integer within optional min/max range.
+    Returns (is_valid, error_message)
+    """
+    try:
+        num = int(value)
+        if min_value is not None and num < min_value:
+            return False, f"{field_name} must be at least {min_value}"
+        if max_value is not None and num > max_value:
+            return False, f"{field_name} must be at most {max_value}"
+        return True, None
+    except (ValueError, TypeError):
+        return False, f"{field_name} must be a valid integer"
+
+
+# ============================================================================
+# BACKUP UTILITIES
+# ============================================================================
+
+def get_backup_dir():
+    """Get the backup directory path, create if doesn't exist."""
+    backup_dir = Path("c:/Cajun Program/backups")
+    backup_dir.mkdir(exist_ok=True)
+    return backup_dir
+
+
+def create_backup():
+    """
+    Create a timestamped backup of the database.
+    Returns (success, backup_path, error_message)
+    """
+    try:
+        db_path = get_db_path()
+        if not os.path.exists(db_path):
+            return False, None, "Database file not found"
+        
+        backup_dir = get_backup_dir()
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_filename = f"Cajun_Data_backup_{timestamp}.db"
+        backup_path = backup_dir / backup_filename
+        
+        # Copy the database file
+        shutil.copy2(db_path, backup_path)
+        
+        # Clean up old backups (keep last 7 days)
+        cleanup_old_backups()
+        
+        return True, str(backup_path), None
+    except Exception as e:
+        return False, None, str(e)
+
+
+def cleanup_old_backups(keep_days=7):
+    """Remove backup files older than keep_days."""
+    try:
+        backup_dir = get_backup_dir()
+        cutoff_time = datetime.now().timestamp() - (keep_days * 24 * 60 * 60)
+        
+        for backup_file in backup_dir.glob("Cajun_Data_backup_*.db"):
+            if backup_file.stat().st_mtime < cutoff_time:
+                backup_file.unlink()
+    except Exception:
+        pass  # Silently fail on cleanup
+
+
+def list_backups():
+    """
+    List all available backup files.
+    Returns list of tuples: (filename, date_created, size_mb)
+    """
+    backups = []
+    backup_dir = get_backup_dir()
+    
+    for backup_file in sorted(backup_dir.glob("Cajun_Data_backup_*.db"), reverse=True):
+        stat = backup_file.stat()
+        date_created = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+        size_mb = stat.st_size / (1024 * 1024)
+        backups.append((backup_file.name, date_created, size_mb))
+    
+    return backups
+
+
+def restore_backup(backup_filename):
+    """
+    Restore database from a backup file.
+    Returns (success, error_message)
+    """
+    try:
+        backup_dir = get_backup_dir()
+        backup_path = backup_dir / backup_filename
+        
+        if not backup_path.exists():
+            return False, "Backup file not found"
+        
+        # Create a backup of the current database before restoring
+        db_path = get_db_path()
+        if os.path.exists(db_path):
+            temp_backup = db_path + ".pre_restore_backup"
+            shutil.copy2(db_path, temp_backup)
+        
+        # Restore the backup
+        shutil.copy2(backup_path, db_path)
+        
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def auto_backup_on_startup():
+    """
+    Create automatic backup on application startup.
+    Returns (success, message)
+    """
+    success, backup_path, error = create_backup()
+    if success:
+        return True, f"Auto-backup created: {Path(backup_path).name}"
+    else:
+        return False, f"Auto-backup failed: {error}"
 
 
 # ============================================================================
 # CONSTANTS
 # ============================================================================
 
-TAX_RATE = 0.0975  # 9.75% Louisiana tax rate
+TAX_RATE = 0.0975  # 9.75% Tennessee tax rate
 
 
 # ============================================================================
@@ -497,9 +742,9 @@ def create_ticket(customer_id: int, boat_id: int, engine_id: int = None,
     conn = _get_connection()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO Tickets (customer_id, boat_id, engine_id, description, 
+        INSERT INTO Tickets (customer_id, boat_id, engine_id, description, customer_notes,
                            date_opened, status)
-        VALUES (?, ?, ?, ?, ?, 'Open')
+        VALUES (?, ?, ?, ?, NULL, ?, 'Open')
     """, (customer_id, boat_id, engine_id, description, date_opened))
     conn.commit()
     ticket_id = cur.lastrowid
@@ -568,14 +813,55 @@ def add_ticket_labor(ticket_id: int, mechanic_id: int, hours: float,
     conn = _get_connection()
     cur = conn.cursor()
     
-    # If no labor rate provided, get mechanic's hourly rate
+    # If no labor rate provided, determine customer rate based on engine class and LaborRates table
     if labor_rate is None:
-        cur.execute("SELECT hourly_rate FROM Mechanics WHERE mechanic_id = ?", (mechanic_id,))
-        result = cur.fetchone()
-        if result:
-            labor_rate = result[0]
+        # Determine engine class for this ticket
+        cur.execute("SELECT engine_id FROM Tickets WHERE ticket_id = ?", (ticket_id,))
+        tr = cur.fetchone()
+        engine_class = None
+        if tr and tr[0]:
+            cur.execute("SELECT engine_type FROM Engines WHERE engine_id = ?", (tr[0],))
+            er = cur.fetchone()
+            eng_type = (er[0].strip().lower() if er and er[0] else '').lower()
+            # Normalize common labels
+            if 'outboard' in eng_type:
+                engine_class = 'outboard'
+            elif 'inboard' in eng_type:
+                engine_class = 'inboard'
+            elif 'stern' in eng_type or 'sterndrive' in eng_type:
+                engine_class = 'sterndrive'
+            elif 'pwc' in eng_type or 'jetski' in eng_type:
+                engine_class = 'pwc'
+        # Fetch current labor rates (create defaults if missing)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS LaborRates (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                outboard REAL NOT NULL,
+                inboard REAL NOT NULL,
+                sterndrive REAL NOT NULL,
+                pwc REAL NOT NULL
+            )
+        """)
+        conn.commit()
+        cur.execute("SELECT outboard, inboard, sterndrive, pwc FROM LaborRates WHERE id = 1")
+        row = cur.fetchone()
+        if not row:
+            cur.execute("INSERT INTO LaborRates (id, outboard, inboard, sterndrive, pwc) VALUES (1, 100.0, 120.0, 120.0, 120.0)")
+            conn.commit()
+            row = (100.0, 120.0, 120.0, 120.0)
+        rates = {
+            'outboard': float(row[0]),
+            'inboard': float(row[1]),
+            'sterndrive': float(row[2]),
+            'pwc': float(row[3])
+        }
+        if engine_class and engine_class in rates:
+            labor_rate = rates[engine_class]
         else:
-            labor_rate = 0.0
+            # Fallback: use mechanic's own hourly rate if available; else default outboard rate
+            cur.execute("SELECT hourly_rate FROM Mechanics WHERE mechanic_id = ?", (mechanic_id,))
+            mr = cur.fetchone()
+            labor_rate = float(mr[0]) if mr and mr[0] is not None else rates['outboard']
     
     cur.execute("""
         INSERT INTO TicketAssignments (ticket_id, mechanic_id, hours_worked, 
@@ -737,6 +1023,26 @@ def get_ticket_details(ticket_id: int) -> Optional[Dict]:
     conn.close()
     return ticket
 
+def _ensure_ticket_notes_column():
+    """Ensure the Tickets table has customer_notes column."""
+    conn = _get_connection()
+    cur = conn.cursor()
+    cur.execute('PRAGMA table_info(Tickets)')
+    cols = [row[1] for row in cur.fetchall()]
+    if 'customer_notes' not in cols:
+        cur.execute('ALTER TABLE Tickets ADD COLUMN customer_notes TEXT')
+        conn.commit()
+    conn.close()
+
+def set_ticket_notes(ticket_id: int, notes: str) -> None:
+    """Set or update the Notes (Tickets.description) for a ticket."""
+    _ensure_ticket_notes_column()
+    conn = _get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE Tickets SET customer_notes = ? WHERE ticket_id = ?", (notes, ticket_id))
+    conn.commit()
+    conn.close()
+
 
 def list_tickets(status: Optional[str] = None) -> List[Dict]:
     """List tickets, optionally filtered by status."""
@@ -832,3 +1138,42 @@ def calculate_balance_due(ticket_id: int) -> float:
     
     balance_due = round(ticket_total - total_paid, 2)
     return balance_due
+
+
+# ============================================================================
+# CLI ENTRY (optional consolidation)
+# ============================================================================
+
+def _cmd_set_notes(args: argparse.Namespace) -> None:
+    set_ticket_notes(args.ticket_id, args.notes)
+    details = get_ticket_details(args.ticket_id)
+    print("Notes updated:")
+    print((details.get('customer_notes') if details else '') or '')
+
+
+def _cmd_append_notes(args: argparse.Namespace) -> None:
+    details = get_ticket_details(args.ticket_id)
+    existing = (details.get('customer_notes') if details else '') or ''
+    combined = (existing + ('\n' if existing else '') + args.notes).strip()
+    set_ticket_notes(args.ticket_id, combined)
+    print("Notes appended:")
+    print(combined)
+
+
+def cli_main(argv: list[str] | None = None) -> None:
+    """Command-line entry that lives within the service layer."""
+    parser = argparse.ArgumentParser(description="Cajun Program CLI")
+    sub = parser.add_subparsers(dest='command', required=True)
+
+    setp = sub.add_parser('set-notes', help='Set customer notes for a ticket')
+    setp.add_argument('ticket_id', type=int)
+    setp.add_argument('notes', type=str)
+    setp.set_defaults(func=_cmd_set_notes)
+
+    appp = sub.add_parser('append-notes', help='Append to customer notes for a ticket')
+    appp.add_argument('ticket_id', type=int)
+    appp.add_argument('notes', type=str)
+    appp.set_defaults(func=_cmd_append_notes)
+
+    args = parser.parse_args(argv)
+    args.func(args)

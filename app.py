@@ -8,8 +8,7 @@ from datetime import datetime
 import os
 import sqlite3
 from db import service
-import validation
-import backup_utils
+from db.init import initialize_database
 import pdf_generator
 
 
@@ -23,11 +22,15 @@ class CajunMarineApp:
         self.root.configure(bg='#1a3a52')
         
         # Ensure database exists
-        from db.db_utils import ensure_database_exists
-        ensure_database_exists()
+        # Run unified initializer (idempotent migrations + defaults)
+        try:
+            initialize_database()
+        except Exception as e:
+            print(f"Initializer warning: {e}")
+        service.ensure_database_exists()
         
         # Auto-backup on startup
-        success, message = backup_utils.auto_backup_on_startup()
+        success, message = service.auto_backup_on_startup()
         if not success:
             print(f"Warning: {message}")
         
@@ -356,7 +359,7 @@ class CajunMarineApp:
             # Validate phone
             phone = phone_entry.get().strip()
             if phone:
-                valid, formatted_phone, error = validation.validate_phone(phone)
+                valid, formatted_phone, error = service.validate_phone(phone)
                 if not valid:
                     messagebox.showerror("Validation Error", error)
                     return
@@ -367,7 +370,7 @@ class CajunMarineApp:
             # Validate email
             email = email_entry.get().strip()
             if email:
-                valid, error = validation.validate_email(email)
+                valid, error = service.validate_email(email)
                 if not valid:
                     messagebox.showerror("Validation Error", error)
                     return
@@ -508,7 +511,7 @@ class CajunMarineApp:
         
         tree = ttk.Treeview(
             tree_frame,
-            columns=('ID', 'Customer', 'Boat', 'Status', 'Opened', 'Total'),
+            columns=('ID', 'Customer', 'Boat', 'Engine', 'Description', 'Status', 'Opened', 'Total'),
             show='headings',
             yscrollcommand=scrollbar.set
         )
@@ -517,6 +520,8 @@ class CajunMarineApp:
         tree.heading('ID', text='Ticket #')
         tree.heading('Customer', text='Customer')
         tree.heading('Boat', text='Boat')
+        tree.heading('Engine', text='Engine')
+        tree.heading('Description', text='Description')
         tree.heading('Status', text='Status')
         tree.heading('Opened', text='Date Opened')
         tree.heading('Total', text='Total')
@@ -524,8 +529,10 @@ class CajunMarineApp:
         tree.column('ID', width=80)
         tree.column('Customer', width=200)
         tree.column('Boat', width=150)
-        tree.column('Status', width=150)
-        tree.column('Opened', width=120)
+        tree.column('Engine', width=180)
+        tree.column('Description', width=250)
+        tree.column('Status', width=130)
+        tree.column('Opened', width=110)
         tree.column('Total', width=100)
         
         tree.pack(fill='both', expand=True)
@@ -548,6 +555,55 @@ class CajunMarineApp:
             if tree.selection():
                 menu.post(e.x_root, e.y_root)
         tree.bind('<Button-3>', show_menu)
+
+        # Inline status dropdown on click within Status column
+        def on_tree_click(event):
+            region = tree.identify("region", event.x, event.y)
+            if region != "cell":
+                return
+            col = tree.identify_column(event.x)
+            # Status column index (1-based): find actual index
+            # Columns order: ID, Customer, Boat, Engine, Description, Status, Opened, Total
+            if col != "#6":
+                return
+            item = tree.identify_row(event.y)
+            if not item:
+                return
+            # Current status value
+            values = tree.item(item, 'values')
+            current_status = values[5]
+            # Compute bbox for overlay
+            bbox = tree.bbox(item, column=col)
+            if not bbox:
+                return
+            x, y, width, height = bbox
+            statuses = ['Open', 'Working', 'Awaiting Parts', 'Awaiting Customer',
+                        'Awaiting Payment', 'Awaiting Pickup', 'Closed']
+            status_var = tk.StringVar(value=current_status)
+            combo = ttk.Combobox(tree, textvariable=status_var, values=statuses, state='readonly')
+            combo.place(x=x + tree.winfo_rootx() - tree.winfo_rootx(),
+                        y=y + tree.winfo_rooty() - tree.winfo_rooty(),
+                        width=width, height=height)
+
+            def commit_change(*args):
+                new_status = status_var.get()
+                # Persist via service
+                ticket_id = values[0]
+                try:
+                    service.update_ticket_status(ticket_id, new_status)
+                    # Update tree display
+                    updated = list(values)
+                    updated[5] = new_status
+                    tree.item(item, values=tuple(updated))
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to update status: {e}")
+                finally:
+                    combo.destroy()
+
+            combo.bind('<<ComboboxSelected>>', commit_change)
+            combo.focus_set()
+
+        tree.bind('<Button-1>', on_tree_click)
     
     def load_tickets(self, tree, status_filter):
         """Load tickets into tree."""
@@ -557,15 +613,39 @@ class CajunMarineApp:
             tickets = service.list_tickets()
         else:
             tickets = service.list_tickets(status_filter)
-        
+
+        # Ensure totals are accurate and gather engine summary
         for t in tickets:
+            try:
+                service.calculate_ticket_totals(t['ticket_id'])
+            except Exception:
+                pass
+            # Fetch up-to-date details for description and engine
+            try:
+                details = service.get_ticket_details(t['ticket_id'])
+            except Exception:
+                details = t
+            if details is None:
+                details = {}
+            engine_summary = 'N/A'
+            if details.get('engine_id'):
+                eng_type = details.get('engine_type') or details.get('engine') or ''
+                eng_make = details.get('engine_make', '')
+                eng_model = details.get('engine_model', '')
+                eng_hp = details.get('engine_hp', '')
+                eng_year = details.get('engine_year', '')
+                engine_summary = f"{eng_make} {eng_model} {eng_hp}HP {eng_type} {eng_year}".strip()
+                engine_summary = ' '.join(engine_summary.split())  # normalize spaces
+
             tree.insert('', 'end', values=(
                 t['ticket_id'],
                 t.get('customer_name', 'N/A'),
                 f"{t.get('boat_make', '')} {t.get('boat_model', '')}".strip() or 'N/A',
+                engine_summary,
+                ((details.get('description') or '') if isinstance(details.get('description', ''), str) else str(details.get('description', ''))).strip()[:120],
                 t['status'],
                 t['date_opened'],
-                f"${t.get('total', 0):.2f}" if t.get('total') else 'N/A'
+                f"${(details.get('total', t.get('total', 0)) or 0):.2f}"
             ))
     
     def add_ticket_dialog(self):
@@ -605,8 +685,7 @@ class CajunMarineApp:
                 # Get boats for this customer
                 boats = []
                 try:
-                    from db.db_utils import get_db_path
-                    conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                    conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                     cur = conn.cursor()
                     cur.execute("SELECT boat_id, year, make, model FROM Boats WHERE customer_id = ?", (customer_id,))
                     boats = [f"{b[0]} - {b[1]} {b[2]} {b[3]}" for b in cur.fetchall()]
@@ -643,8 +722,7 @@ class CajunMarineApp:
                 boat_id = int(boat_var.get().split(' - ')[0])
                 engines = []
                 try:
-                    from db.db_utils import get_db_path
-                    conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                    conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                     cur = conn.cursor()
                     cur.execute("SELECT engine_id, engine_type, make, model, hp FROM Engines WHERE boat_id = ?", (boat_id,))
                     engines = [f"{e[0]} - {e[2]} {e[3]} ({e[4]} HP {e[1] if e[1] else ''})" for e in cur.fetchall()]
@@ -726,6 +804,9 @@ Closed: {ticket.get('date_closed', 'N/A')}
 Description:
 {ticket.get('description', 'No description')}
 
+    Customer Notes:
+    {ticket.get('customer_notes', 'No customer notes')}
+
 Financial Summary:
 Subtotal: ${ticket.get('subtotal', 0):.2f}
 Tax: ${ticket.get('tax_amount', 0):.2f}
@@ -733,6 +814,24 @@ Total: ${ticket.get('total', 0):.2f}
 """
         info_text.insert('1.0', summary)
         info_text.config(state='disabled')
+
+        # Notes tab (editable)
+        notes_frame = tk.Frame(notebook)
+        notebook.add(notes_frame, text='Notes')
+        tk.Label(notes_frame, text="Customer Notes (printed on invoice):").pack(anchor='w', padx=10, pady=(10, 0))
+        notes_text = tk.Text(notes_frame, wrap='word', height=10)
+        notes_text.pack(fill='both', expand=True, padx=10, pady=10)
+        notes_text.insert('1.0', ticket.get('customer_notes', '') or '')
+        
+        def save_notes():
+            content = notes_text.get('1.0', 'end').strip()
+            try:
+                service.set_ticket_notes(ticket_id, content)
+                messagebox.showinfo("Success", "Notes saved")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save notes: {e}")
+        
+        tk.Button(notes_frame, text="Save Notes", command=save_notes, bg='#5cb85c', fg='white').pack(anchor='e', padx=10, pady=(0,10))
         
         # Parts tab
         parts_frame = tk.Frame(notebook)
@@ -887,8 +986,7 @@ Total: ${ticket.get('total', 0):.2f}
         tk.Label(dialog, text="Mechanic:*").grid(row=0, column=0, sticky='e', padx=5, pady=5)
         # Get mechanics from database
         import sqlite3
-        from db.db_utils import get_db_path
-        conn = sqlite3.connect(get_db_path(), timeout=10.0)
+        conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
         cur = conn.cursor()
         cur.execute("SELECT mechanic_id, name, hourly_rate FROM Mechanics ORDER BY name")
         mechanics = cur.fetchall()
@@ -902,10 +1000,74 @@ Total: ${ticket.get('total', 0):.2f}
         tk.Label(dialog, text="Hours:*").grid(row=1, column=0, sticky='e', padx=5, pady=5)
         hours_entry = tk.Entry(dialog, width=40)
         hours_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        # Computed customer rate display and optional override
+        rate_var = tk.StringVar(value="")
+        tk.Label(dialog, text="Customer Rate ($/hr):").grid(row=2, column=0, sticky='e', padx=5, pady=5)
+        rate_display = tk.Label(dialog, textvariable=rate_var, anchor='w')
+        rate_display.grid(row=2, column=1, sticky='w', padx=5, pady=5)
+
+        tk.Label(dialog, text="Override Rate ($/hr):").grid(row=3, column=0, sticky='e', padx=5, pady=5)
+        rate_override_entry = tk.Entry(dialog, width=40)
+        rate_override_entry.grid(row=3, column=1, padx=5, pady=5)
         
-        tk.Label(dialog, text="Work Description:").grid(row=2, column=0, sticky='ne', padx=5, pady=5)
+        tk.Label(dialog, text="Work Description:").grid(row=4, column=0, sticky='ne', padx=5, pady=5)
         desc_text = tk.Text(dialog, width=40, height=5)
-        desc_text.grid(row=2, column=1, padx=5, pady=5)
+        desc_text.grid(row=4, column=1, padx=5, pady=5)
+
+        def refresh_rate(*args):
+            try:
+                # Determine engine class for ticket
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
+                cur = conn.cursor()
+                cur.execute("SELECT engine_id FROM Tickets WHERE ticket_id = ?", (ticket_id,))
+                tr = cur.fetchone()
+                engine_class = None
+                if tr and tr[0]:
+                    cur.execute("SELECT engine_type FROM Engines WHERE engine_id = ?", (tr[0],))
+                    er = cur.fetchone()
+                    eng_type = (er[0].strip().lower() if er and er[0] else '').lower()
+                    if 'outboard' in eng_type:
+                        engine_class = 'outboard'
+                    elif 'inboard' in eng_type:
+                        engine_class = 'inboard'
+                    elif 'stern' in eng_type or 'sterndrive' in eng_type:
+                        engine_class = 'sterndrive'
+                    elif 'pwc' in eng_type or 'jetski' in eng_type:
+                        engine_class = 'pwc'
+                # Load rates
+                cur.execute("SELECT outboard, inboard, sterndrive, pwc FROM LaborRates WHERE id = 1")
+                row = cur.fetchone()
+                if not row:
+                    # initialize defaults if missing
+                    cur.execute("INSERT OR REPLACE INTO LaborRates (id, outboard, inboard, sterndrive, pwc) VALUES (1, 100.0, 120.0, 120.0, 120.0)")
+                    conn.commit()
+                    row = (100.0, 120.0, 120.0, 120.0)
+                rates = {
+                    'outboard': float(row[0]),
+                    'inboard': float(row[1]),
+                    'sterndrive': float(row[2]),
+                    'pwc': float(row[3])
+                }
+                # Fallback to mechanic hourly rate if engine not set
+                display_rate = None
+                if engine_class and engine_class in rates:
+                    display_rate = rates[engine_class]
+                else:
+                    cur.execute("SELECT hourly_rate FROM Mechanics WHERE mechanic_id = ?", (int(mechanic_var.get().split(' - ')[0]) if mechanic_var.get() else -1,))
+                    mr = cur.fetchone()
+                    if mr and mr[0] is not None:
+                        display_rate = float(mr[0])
+                    else:
+                        display_rate = rates['outboard']
+                rate_var.set(f"${display_rate:.2f}")
+                conn.close()
+            except Exception:
+                rate_var.set("$0.00")
+
+        # Refresh rate when mechanic selection changes
+        mechanic_var.trace('w', lambda *args: refresh_rate())
+        refresh_rate()
         
         def save():
             if not mechanic_var.get() or not hours_entry.get():
@@ -916,15 +1078,17 @@ Total: ${ticket.get('total', 0):.2f}
                 mechanic_id = int(mechanic_var.get().split(' - ')[0])
                 hours = float(hours_entry.get().strip())
                 description = desc_text.get('1.0', 'end').strip() or None
-                
-                service.add_ticket_labor(ticket_id, mechanic_id, hours, description)
+                # Use override rate if provided
+                rate_override = rate_override_entry.get().strip()
+                labor_rate = float(rate_override) if rate_override else None
+                service.add_ticket_labor(ticket_id, mechanic_id, hours, description, labor_rate)
                 messagebox.showinfo("Success", "Labor added to ticket")
                 dialog.destroy()
                 self.show_tickets()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to add labor: {e}")
         
-        tk.Button(dialog, text="Add Labor", command=save, bg='#5cb85c', fg='white').grid(row=3, column=0, columnspan=2, pady=20)
+        tk.Button(dialog, text="Add Labor", command=save, bg='#5cb85c', fg='white').grid(row=5, column=0, columnspan=2, pady=20)
     
     def add_deposit_dialog(self, tree):
         """Add deposit to selected ticket."""
@@ -1435,13 +1599,13 @@ Total: ${ticket.get('total', 0):.2f}
             
             # Validate serial number
             serial = serial_entry.get().strip()
-            valid, error = validation.validate_serial_number(serial)
+            valid, error = service.validate_serial_number(serial)
             if not valid:
                 messagebox.showerror("Validation Error", error)
                 return
             
             # Validate HP is integer
-            valid, error = validation.validate_integer(hp_entry.get(), "HP", min_value=1, max_value=500)
+            valid, error = service.validate_integer(hp_entry.get(), "HP", min_value=1, max_value=500)
             if not valid:
                 messagebox.showerror("Validation Error", error)
                 return
@@ -1954,15 +2118,14 @@ Notes:
                 return
             
             # Validate year
-            valid, error = validation.validate_integer(year, "Year", min_value=1900, max_value=2100)
+            valid, error = service.validate_integer(year, "Year", min_value=1900, max_value=2100)
             if not valid:
                 messagebox.showerror("Validation Error", error)
                 return
             
             try:
                 # Insert boat into database
-                from db.db_utils import get_db_path
-                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                 cur = conn.cursor()
                 cur.execute("""
                     INSERT INTO Boats (customer_id, year, make, model, vin, color1, color2, color3)
@@ -1975,7 +2138,7 @@ Notes:
                 conn.close()
                 
                 # Refresh boat dropdown
-                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                 cur = conn.cursor()
                 cur.execute("SELECT boat_id, year, make, model FROM Boats WHERE customer_id = ?", (customer_id,))
                 boats = [f"{b[0]} - {b[1]} {b[2]} {b[3]}" for b in cur.fetchall()]
@@ -1994,8 +2157,7 @@ Notes:
                     vin = vin_entry.get().strip()
                     
                     # Get existing boat info
-                    from db.db_utils import get_db_path
-                    conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                    conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                     cur = conn.cursor()
                     cur.execute("""
                         SELECT b.boat_id, b.year, b.make, b.model, b.customer_id, c.name
@@ -2021,7 +2183,7 @@ Notes:
                         if transfer:
                             try:
                                 # Transfer ownership
-                                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                                 cur = conn.cursor()
                                 cur.execute("""
                                     UPDATE Boats SET customer_id = ? WHERE boat_id = ?
@@ -2030,7 +2192,7 @@ Notes:
                                 conn.close()
                                 
                                 # Refresh boat dropdown
-                                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                                 cur = conn.cursor()
                                 cur.execute("SELECT boat_id, year, make, model FROM Boats WHERE customer_id = ?", (customer_id,))
                                 boats = [f"{b[0]} - {b[1]} {b[2]} {b[3]}" for b in cur.fetchall()]
@@ -2119,15 +2281,14 @@ Notes:
                 return
             
             # Validate HP as float
-            valid, error = validation.validate_positive_number(hp, "HP", allow_zero=False)
+            valid, error = service.validate_positive_number(hp, "HP", allow_zero=False)
             if not valid:
                 messagebox.showerror("Validation Error", error)
                 return
             
             try:
                 # Insert engine into database
-                from db.db_utils import get_db_path
-                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                 cur = conn.cursor()
                 cur.execute("""
                     INSERT INTO Engines (boat_id, engine_type, make, model, hp, serial_number, year, outdrive)
@@ -2141,7 +2302,7 @@ Notes:
                 conn.close()
                 
                 # Refresh engine dropdown
-                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                 cur = conn.cursor()
                 cur.execute("SELECT engine_id, engine_type, make, model, hp FROM Engines WHERE boat_id = ?", (boat_id,))
                 engines = [f"{e[0]} - {e[2]} {e[3]} ({e[4]} HP {e[1]})" for e in cur.fetchall()]
@@ -2222,8 +2383,7 @@ Notes:
         
         # Get mechanics from database
         import sqlite3
-        from db.db_utils import get_db_path
-        conn = sqlite3.connect(get_db_path(), timeout=10.0)
+        conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
         cur = conn.cursor()
         cur.execute("SELECT mechanic_id, name, hourly_rate FROM Mechanics ORDER BY name")
         mechanics = cur.fetchall()
@@ -2345,7 +2505,7 @@ Notes:
         backup_tree.pack(fill='both', expand=True)
         
         # Load backups
-        backups = backup_utils.list_backups()
+        backups = service.list_backups()
         for filename, date, size in backups:
             backup_tree.insert('', 'end', values=(filename, date, f"{size:.2f}"))
         
@@ -2353,7 +2513,7 @@ Notes:
     
     def create_manual_backup(self):
         """Create a manual backup."""
-        success, backup_path, error = backup_utils.create_backup()
+        success, backup_path, error = service.create_backup()
         if success:
             messagebox.showinfo("Success", f"Backup created successfully!\n\nLocation: {backup_path}")
         else:
@@ -2361,7 +2521,7 @@ Notes:
     
     def restore_from_backup(self):
         """Restore database from selected backup."""
-        backups = backup_utils.list_backups()
+        backups = service.list_backups()
         if not backups:
             messagebox.showwarning("No Backups", "No backup files found.")
             return
@@ -2401,7 +2561,7 @@ Notes:
             )
             
             if confirm:
-                success, error = backup_utils.restore_backup(filename)
+                success, error = service.restore_backup(filename)
                 if success:
                     messagebox.showinfo("Success", "Database restored successfully!\n\nPlease restart the application.")
                     dialog.destroy()
@@ -2425,9 +2585,8 @@ Notes:
             boat = None
             if details.get('boat_id'):
                 try:
-                    from db.db_utils import get_db_path
                     import sqlite3
-                    conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                    conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
                     cur.execute("SELECT * FROM Boats WHERE boat_id = ?", (details['boat_id'],))
@@ -2623,8 +2782,7 @@ Notes:
         
         # Load mechanics
         import sqlite3
-        from db.db_utils import get_db_path
-        conn = sqlite3.connect(get_db_path(), timeout=10.0)
+        conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
         cur = conn.cursor()
         cur.execute("SELECT mechanic_id, name, hourly_rate, phone, email FROM Mechanics ORDER BY name")
         mechanics = cur.fetchall()
@@ -2646,6 +2804,79 @@ Notes:
                  bg='#2d6a9f', fg='white').pack(side='left', padx=5)
         tk.Button(btn_frame, text="Delete", command=lambda: self.delete_mechanic(mech_tree), 
                  bg='#d9534f', fg='white').pack(side='left', padx=5)
+
+        # Labor Rates tab
+        rates_frame = tk.Frame(notebook)
+        notebook.add(rates_frame, text='Labor Rates')
+
+        tk.Label(rates_frame, text="Set labor rates per engine class:", font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=10, pady=(10,5))
+
+        form = tk.Frame(rates_frame)
+        form.pack(anchor='w', padx=10, pady=5)
+
+        tk.Label(form, text="Outboard ($/hr):").grid(row=0, column=0, sticky='e', padx=5, pady=5)
+        out_entry = tk.Entry(form, width=10)
+        out_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        tk.Label(form, text="Inboard ($/hr):").grid(row=1, column=0, sticky='e', padx=5, pady=5)
+        inb_entry = tk.Entry(form, width=10)
+        inb_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        tk.Label(form, text="Sterndrive ($/hr):").grid(row=2, column=0, sticky='e', padx=5, pady=5)
+        ster_entry = tk.Entry(form, width=10)
+        ster_entry.grid(row=2, column=1, padx=5, pady=5)
+
+        tk.Label(form, text="PWC ($/hr):").grid(row=3, column=0, sticky='e', padx=5, pady=5)
+        pwc_entry = tk.Entry(form, width=10)
+        pwc_entry.grid(row=3, column=1, padx=5, pady=5)
+
+        # Load existing or defaults
+        try:
+            import sqlite3
+            conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS LaborRates (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    outboard REAL NOT NULL,
+                    inboard REAL NOT NULL,
+                    sterndrive REAL NOT NULL,
+                    pwc REAL NOT NULL
+                )
+            """)
+            conn.commit()
+            cur.execute("SELECT outboard, inboard, sterndrive, pwc FROM LaborRates WHERE id = 1")
+            row = cur.fetchone()
+            if not row:
+                # Defaults: Outboard 100, Inboard 120, Sterndrive 120, PWC 120
+                cur.execute("INSERT INTO LaborRates (id, outboard, inboard, sterndrive, pwc) VALUES (1, 100.0, 120.0, 120.0, 120.0)")
+                conn.commit()
+                row = (100.0, 120.0, 120.0, 120.0)
+            conn.close()
+            out_entry.insert(0, str(row[0]))
+            inb_entry.insert(0, str(row[1]))
+            ster_entry.insert(0, str(row[2]))
+            pwc_entry.insert(0, str(row[3]))
+        except Exception as e:
+            tk.Label(rates_frame, text=f"Error loading rates: {e}", fg='red').pack(anchor='w', padx=10)
+
+        def save_rates():
+            try:
+                out = float(out_entry.get().strip())
+                inb = float(inb_entry.get().strip())
+                ster = float(ster_entry.get().strip())
+                pwc = float(pwc_entry.get().strip())
+                import sqlite3
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
+                cur = conn.cursor()
+                cur.execute("UPDATE LaborRates SET outboard = ?, inboard = ?, sterndrive = ?, pwc = ? WHERE id = 1", (out, inb, ster, pwc))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", "Labor rates saved")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save rates: {e}")
+
+        tk.Button(rates_frame, text="Save Rates", command=save_rates, bg='#5cb85c', fg='white').pack(anchor='w', padx=10, pady=10)
     
     def add_mechanic_dialog(self):
         """Add new mechanic."""
@@ -2679,8 +2910,7 @@ Notes:
             
             try:
                 import sqlite3
-                from db.db_utils import get_db_path
-                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                 cur = conn.cursor()
                 cur.execute("""
                     INSERT INTO Mechanics (name, hourly_rate, phone, email)
@@ -2708,8 +2938,7 @@ Notes:
         
         # Get current mechanic data
         import sqlite3
-        from db.db_utils import get_db_path
-        conn = sqlite3.connect(get_db_path(), timeout=10.0)
+        conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
         cur = conn.cursor()
         cur.execute("SELECT name, hourly_rate, phone, email FROM Mechanics WHERE mechanic_id = ?", (mechanic_id,))
         mech = cur.fetchone()
@@ -2752,7 +2981,7 @@ Notes:
                 return
             
             try:
-                conn = sqlite3.connect(get_db_path(), timeout=10.0)
+                conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
                 cur = conn.cursor()
                 cur.execute("""
                     UPDATE Mechanics 
@@ -2786,8 +3015,7 @@ Notes:
         
         try:
             import sqlite3
-            from db.db_utils import get_db_path
-            conn = sqlite3.connect(get_db_path(), timeout=10.0)
+            conn = sqlite3.connect(service.get_db_path(), timeout=10.0)
             cur = conn.cursor()
             cur.execute("DELETE FROM Mechanics WHERE mechanic_id = ?", (mechanic_id,))
             conn.commit()

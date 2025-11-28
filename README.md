@@ -4,19 +4,22 @@ Unified application for managing customers, boats, engines, parts, tickets, esti
 
 ## Core Files
 - `app.py` — Main Tkinter application (navigation, tickets, parts, labor, estimates, backups, PDF export).
-- `db/service.py` — Service layer with all CRUD and business logic (tax calculation, totals, deposits).
-- `db/db_utils.py` / `init_db.py` — Database initialization and path helpers.
-- `schema.sql` — Full database schema (customers, boats, engines, parts, tickets, estimates, mechanics, deposits).
+- `db/service.py` — Central service layer: CRUD, business logic, tax/total calculations, deposits, plus validation, backup utilities, and DB path helpers. Also hosts the CLI entry (`cli_main`).
+- `db/init.py` — Unified, idempotent database initializer and lightweight migrations.
+- `schema.sql` — Baseline database schema (customers, boats, engines, parts, tickets, estimates, mechanics, deposits).
 - `pdf_generator.py` — Invoice and estimate PDF generation.
-- `backup_utils.py` — Automated and manual backup management.
-- `validation.py` — Field validation utilities.
 
-Legacy helper scripts and earlier multi-form GUI modules have been removed to reduce clutter. The single entry point is now `app.py`.
+Legacy helper scripts (old `init.py`, `db/db_utils.py`, `init_db.py`, `backup_utils.py`, `validation.py`) have been consolidated into `db/service.py` and `db/init.py`. The application auto-initializes on startup.
 
 ## Setup
 ```powershell
-python init.py   # Ensure schema applied
-python app.py    # Launch application
+python app.py    # Launch application (auto-initializes DB and creates a backup)
+```
+
+Optional CLI (notes example):
+```powershell
+python cli.py set-notes 123 "Replaced water pump; customer approved"
+python cli.py append-notes 123 "Waiting on pickup"
 ```
 
 ## Key Features

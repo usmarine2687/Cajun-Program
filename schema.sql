@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS Tickets (
     boat_id INTEGER NOT NULL,
     engine_id INTEGER,
     description TEXT,
+    customer_notes TEXT,
     status TEXT CHECK(status IN ('Open', 'Working', 'Awaiting Parts', 'Awaiting Customer', 'Awaiting Payment', 'Awaiting Pickup', 'Closed')) DEFAULT 'Open',
     date_opened DATE DEFAULT CURRENT_DATE,
     date_closed DATE,
